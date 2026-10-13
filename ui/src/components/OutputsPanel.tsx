@@ -1,0 +1,93 @@
+import { useRef, useState } from 'react'
+import { send } from '../client'
+import { OUTPUT_PRESETS, needMet, specNeed } from '../helpers'
+import { needLabel, t } from '../i18n'
+import type { Output, State } from '../types'
+import { Panel, StatusSign } from './ui'
+
+function outputStatus(o: Output) {
+  if (o.status === 'running') return { tone: 'ok' as const, label: t('Running') }
+  if (o.status === 'starting') return { tone: 'warn' as const, label: t('Starting') }
+  return { tone: 'error' as const, label: t('Error') }
+}
+
+export function OutputsPanel({ state }: { state: State }) {
+  const [spec, setSpec] = useState('')
+  const input = useRef<HTMLInputElement>(null)
+  const caps = state.capabilities
+  const need = specNeed(spec)
+  const add = () => {
+    const s = spec.trim()
+    if (!s) return
+    send({ cmd: 'addOutput', spec: s })
+    setSpec('')
+  }
+  return (
+    <Panel title={t('Outputs')} className="outputs">
+      {state.outputs.length === 0 ? (
+        <p className="empty">{t('No outputs yet. Add one below.')}</p>
+      ) : (
+        <ul className="output-list">
+          {state.outputs.map((o) => {
+            const st = outputStatus(o)
+            return (
+              <li key={o.id}>
+                <StatusSign tone={st.tone} label={st.label} />
+                <span className="output-spec" title={o.spec}>
+                  {o.spec}
+                  {o.error && <small className="output-error">{o.error}</small>}
+                </span>
+                <button type="button" className="btn btn-ghost btn-danger" onClick={() => send({ cmd: 'removeOutput', id: o.id })}>
+                  {t('Remove')}
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      <form
+        className="output-add"
+        onSubmit={(e) => {
+          e.preventDefault()
+          add()
+        }}
+      >
+        <label className="field field-wide">
+          <span>{t('New output')}</span>
+          <input
+            ref={input}
+            value={spec}
+            onChange={(e) => setSpec(e.target.value)}
+            placeholder="srt://0.0.0.0:9100?mode=listener"
+            spellCheck={false}
+            autoComplete="off"
+          />
+        </label>
+        <button type="submit" className="btn btn-primary" disabled={!spec.trim()}>
+          {t('Add output')}
+        </button>
+      </form>
+      {need && !needMet(need, caps) && <p className="hint hint-warn">{needLabel(need)}</p>}
+      <div className="presets" role="group" aria-label={t('Presets')}>
+        {OUTPUT_PRESETS.map((p) => {
+          const ok = needMet(p.need, caps)
+          return (
+            <button
+              key={p.spec}
+              type="button"
+              className={`chip ${spec === p.spec ? 'selected' : ''}`}
+              disabled={!ok}
+              title={ok ? p.spec : needLabel(p.need)}
+              onClick={() => {
+                setSpec(p.spec)
+                input.current?.focus()
+              }}
+            >
+              {t(p.label)}
+            </button>
+          )
+        })}
+      </div>
+    </Panel>
+  )
+}

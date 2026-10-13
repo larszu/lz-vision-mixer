@@ -1,0 +1,66 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos-arm64
+          - os: ubuntu-latest
+            name: linux-x64
+          - os: windows-latest
+            name: windows-x64
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24 }
+      - name: UI
+        working-directory: ui
+        run: npm ci && npm run build
+      - name: GStreamer (macOS)
+        if: runner.os == 'macOS'
+        run: brew install gstreamer pkg-config
+      - name: GStreamer (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - name: GStreamer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install -y gstreamer gstreamer-devel pkgconfiglite --no-progress
+          "C:\gstreamer\1.0\msvc_x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: sed -i.bak "s/^version = \".*\"/version = \"${GITHUB_REF_NAME#v}\"/" engine/Cargo.toml
+      - run: cargo build --release --manifest-path engine/Cargo.toml
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p pkg
+          exe=lz-vision-mixer; [ "$RUNNER_OS" = Windows ] && exe=lz-vision-mixer.exe
+          cp "engine/target/release/$exe" pkg/
+          cp README.md LICENSE pkg/
+          cd pkg
+          if [ "$RUNNER_OS" = Windows ]; then 7z a ../lz-vision-mixer-${{ matrix.name }}.zip . ; else tar czf ../lz-vision-mixer-${{ matrix.name }}.tar.gz . ; fi
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes || true
+          shopt -s nullglob
+          gh release upload "$GITHUB_REF_NAME" lz-vision-mixer-*.tar.gz lz-vision-mixer-*.zip --clobber
