@@ -40,8 +40,8 @@ jobs:
         shell: pwsh
         run: |
           choco install -y gstreamer gstreamer-devel pkgconfiglite --no-progress
-          "C:\gstreamer\1.0\msvc_x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          "PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "PKG_CONFIG_PATH=C:\Program Files\gstreamer\1.0\msvc_x86_64\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
       - uses: dtolnay/rust-toolchain@stable
       - name: Version from tag
         if: startsWith(github.ref, 'refs/tags/v')
