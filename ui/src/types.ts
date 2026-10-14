@@ -121,6 +121,7 @@ export interface Mic {
   name: string
   device: string | null
   channel: number
+  stereo?: boolean
   status: 'empty' | 'starting' | 'running' | 'error'
   error: string | null
   volume: number
@@ -275,7 +276,7 @@ export type Command =
   | { cmd: 'master'; volume?: number; muted?: boolean }
   | { cmd: 'addOutput'; spec: string }
   | { cmd: 'removeOutput'; id: string }
-  | { cmd: 'setMic'; mic: number; device: string; channel: number; name?: string }
+  | { cmd: 'setMic'; mic: number; device: string; channel: number; name?: string; stereo?: boolean }
   | { cmd: 'clearMic'; mic: number }
   | { cmd: 'renameMic'; mic: number; name: string }
   | { cmd: 'micAudio'; mic: number; volume?: number; muted?: boolean; inProgram?: boolean; delayMs?: number }

@@ -32,10 +32,14 @@ function MicRow({ m, devices, peak, open, onToggle, onRemove }: { m: Mic; device
   const st = micStatus(m)
   const used = m.device != null
 
-  const pick = (deviceId: string, channel: number) => {
+  const stereo = m.stereo ?? false
+  const pick = (deviceId: string, channel: number, st = stereo) => {
     if (!deviceId) return send({ cmd: 'clearMic', mic: m.mic })
-    send({ cmd: 'setMic', mic: m.mic, device: deviceId, channel, ...(name.trim() ? { name: name.trim() } : {}) })
+    send({ cmd: 'setMic', mic: m.mic, device: deviceId, channel, stereo: st, ...(name.trim() ? { name: name.trim() } : {}) })
   }
+  // A stereo pair needs a second channel after the first one.
+  const channelCount = dev?.channels ?? Math.max(1, m.channel + 1 + (stereo ? 1 : 0))
+  const firstChannels = Math.max(1, channelCount - (stereo ? 1 : 0))
   const commitName = () => {
     const n = name.trim()
     if (n === m.name) return
@@ -82,13 +86,23 @@ function MicRow({ m, devices, peak, open, onToggle, onRemove }: { m: Mic; device
             {t('Mic')} {m.mic} {t('Channel')}
           </span>
           <select value={m.channel} disabled={!dev} onChange={(e) => pick(m.device!, Number(e.target.value))} title={t('Channel')}>
-            {Array.from({ length: dev?.channels ?? Math.max(1, m.channel + 1) }, (_, i) => (
+            {Array.from({ length: firstChannels }, (_, i) => (
               <option key={i} value={i}>
-                {t('Ch')} {i + 1}
+                {t('Ch')} {stereo ? `${i + 1}/${i + 2}` : i + 1}
               </option>
             ))}
           </select>
         </label>
+        <button
+          type="button"
+          className={`btn btn-sm ${stereo ? 'selected' : ''}`}
+          aria-pressed={stereo}
+          disabled={!dev || (!stereo && channelCount < 2)}
+          onClick={() => pick(m.device!, Math.min(m.channel, Math.max(0, channelCount - 2)), !stereo)}
+          title={t('Stereo pair: this channel and the next (line inputs, music)')}
+        >
+          {t('Stereo')}
+        </button>
         <button type="button" className="btn btn-sm btn-icon btn-ghost mic-remove" onClick={onRemove} aria-label={`${t('Remove mic')} ${m.mic}`} title={t('Remove mic')}>
           <Icon name="trash" size={16} />
         </button>

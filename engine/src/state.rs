@@ -218,6 +218,9 @@ pub struct Mic {
     pub name: String,
     pub device: Option<String>,
     pub channel: u32,
+    /// Channel and channel + 1 as a stereo pair (line inputs, music).
+    #[serde(default)]
+    pub stereo: bool,
     #[serde(skip_deserializing, default = "empty_status")]
     pub status: SlotStatus,
     #[serde(skip_deserializing)]
@@ -347,7 +350,7 @@ pub enum Command {
     Master { volume: Option<f64>, muted: Option<bool> },
     AddOutput { spec: String },
     RemoveOutput { id: String },
-    SetMic { mic: usize, device: String, channel: u32, name: Option<String> },
+    SetMic { mic: usize, device: String, channel: u32, name: Option<String>, stereo: Option<bool> },
     ClearMic { mic: usize },
     RenameMic { mic: usize, name: String },
     #[serde(rename_all = "camelCase")]

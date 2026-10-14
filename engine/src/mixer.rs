@@ -155,6 +155,7 @@ fn new_mic(m: usize) -> MicRt {
             name: format!("Mic {m}"),
             device: None,
             channel: 0,
+            stereo: false,
             status: SlotStatus::Empty,
             error: None,
             volume: 1.0,
@@ -747,7 +748,14 @@ impl Mixer {
             }
             Command::AddOutput { spec } => self.add_output(spec)?,
             Command::RemoveOutput { id } => self.remove_output(&id)?,
-            Command::SetMic { mic, device, channel, name } => self.set_mic(mic, Some((device, channel)), name)?,
+            Command::SetMic { mic, device, channel, name, stereo } => {
+                if let Some(st) = stereo {
+                    let mut c = self.core.lock().unwrap();
+                    let i = c.mi(mic)?;
+                    c.mics[i].info.stereo = st;
+                }
+                self.set_mic(mic, Some((device, channel)), name)?
+            }
             Command::ClearMic { mic } => self.set_mic(mic, None, None)?,
             Command::RenameMic { mic, name } => {
                 let mut c = self.core.lock().unwrap();
@@ -1581,9 +1589,11 @@ impl Mixer {
                                         let r = field2(s, "rms");
                                         speech.insert(format!("slot:{n}"), r[0].max(r[1]));
                                     } else if let Some(n) = num("micpre") {
-                                        speech.insert(format!("mic:{n}"), field2(s, "rms")[0]);
+                                        let r = field2(s, "rms");
+                                        speech.insert(format!("mic:{n}"), r[0].max(r[1]));
                                     } else if let Some(n) = num("miclvl") {
-                                        mics.insert(n, peaks(s)[0]);
+                                        let p = peaks(s);
+                                        mics.insert(n, p[0].max(p[1]));
                                     }
                                 }
                             }
@@ -1804,7 +1814,7 @@ impl Mixer {
         }
         let i = c.mi(mic)?;
         let built = match c.devices.iter().find(|d| d.info.id == dev) {
-            Some(d) => devices::mic_pipeline(d, ch, mic, &c.mics[i].info.strip),
+            Some(d) => devices::mic_pipeline(d, ch, c.mics[i].info.stereo, mic, &c.mics[i].info.strip),
             None => Err(anyhow!("audio device '{dev}' not found")),
         };
         let me = self.me.clone();
