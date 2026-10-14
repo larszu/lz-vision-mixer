@@ -25,11 +25,13 @@ export function CurvePreview({ easing }: { easing: Easing }) {
 }
 
 /**
- * Vertical T-bar, top = 0, bottom = 1. While dragging the local value wins;
- * otherwise it follows state.tbar, which also shows auto transitions running.
- * Sends are coalesced to one per animation frame.
+ * Vertical T-bar like the lever of a panel: it rests at one end and the next
+ * transition runs to the other, so after every transition the direction
+ * flips. `value` is where the lever sits; `progress` is how far the running
+ * transition has come, which fills the bar from the resting end. While
+ * dragging the local value wins. Sends are coalesced to one per frame.
  */
-function TBar({ value }: { value: number }) {
+function TBar({ value, inverted }: { value: number; inverted: boolean }) {
   const track = useRef<HTMLDivElement>(null)
   const [drag, setDrag] = useState<number | null>(null)
   const pending = useRef<number | null>(null)
@@ -49,6 +51,8 @@ function TBar({ value }: { value: number }) {
   }
 
   const shown = drag ?? value
+  // How far the lever has travelled from its resting end.
+  const fill = inverted ? 1 - shown : shown
   return (
     <div className="tbar">
       <div
@@ -84,10 +88,10 @@ function TBar({ value }: { value: number }) {
           e.stopPropagation()
         }}
       >
-        <div className="tbar-fill" style={{ height: `${shown * 100}%` }} />
+        <div className="tbar-fill" style={inverted ? { bottom: 0, top: 'auto', height: `${fill * 100}%` } : { height: `${fill * 100}%` }} />
         <div className="tbar-handle" style={{ top: `${shown * 100}%` }} />
       </div>
-      <span className="tbar-value">{Math.round(shown * 100)}%</span>
+      <span className="tbar-value">{Math.round(fill * 100)}%</span>
     </div>
   )
 }
@@ -165,7 +169,7 @@ export function TransitionPanel({ state }: { state: State }) {
             {t('FTB')}
           </button>
         </div>
-        <TBar value={state.tbar} />
+        <TBar value={state.tbar} inverted={state.tbarInverted ?? false} />
       </div>
     </Panel>
   )

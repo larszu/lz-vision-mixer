@@ -229,6 +229,7 @@ export interface State {
   transition: { kind: TransitionKind; durationMs: number; easing: Easing }
   inTransition: boolean
   tbar: number
+  tbarInverted?: boolean
   ftb: boolean
   overlays: Overlay[]
   outputs: Output[]

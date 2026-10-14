@@ -59,7 +59,9 @@ interface State {
   preview: number | null
   transition: { kind: TransitionKind; durationMs: number; easing: Easing }
   inTransition: boolean
-  tbar: number              // 0..1, 0 when idle
+  tbar: number              // where the lever sits, 0..1
+  tbarInverted: boolean     // lever resting at the bottom: the next transition runs upwards
+                            // (after every completed transition the far end becomes the new start)
   ftb: boolean              // fade to black active (or fading)
   overlays: Overlay[]
   outputs: Output[]
@@ -112,7 +114,7 @@ type Command =
   | { cmd: 'cut' }
   | { cmd: 'auto' }                           // run the selected transition
   | { cmd: 'setTransition'; kind?: TransitionKind; durationMs?: number; easing?: Easing }
-  | { cmd: 'tbar'; value: number }            // 0..1; reaching 1 completes the transition
+  | { cmd: 'tbar'; value: number }            // lever position 0..1; reaching the far end completes the transition
   | { cmd: 'ftb' }                            // toggle fade to black (uses transition duration and easing)
   | { cmd: 'overlay'; index: number; slot?: number | null; rect?: Rect; transition?: Overlay['transition']; durationMs?: number }
   | { cmd: 'overlayOn'; index: number; on: boolean }   // animated
