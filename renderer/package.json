@@ -1,0 +1,40 @@
+{
+  "name": "lz-vision-mixer-renderer",
+  "version": "0.1.0",
+  "description": "OGraf graphics renderer for LZ Vision Mixer: plays EBU OGraf graphics in offscreen Chromium windows and streams them with transparency to the mixer engine.",
+  "main": "dist/main/index.js",
+  "type": "commonjs",
+  "author": "Lars Zumpe",
+  "license": "MIT",
+  "productName": "LZ Vision Mixer Graphics",
+  "scripts": {
+    "build": "tsc -p tsconfig.main.json && tsc -p tsconfig.pages.json && node scripts/copy-pages.mjs",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.pages.json --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test",
+    "start": "npm run build && electron .",
+    "fake-engine": "node scripts/fake-engine.mjs",
+    "dist:mac": "npm run build && electron-builder --config electron-builder.cjs --mac --publish never",
+    "dist:win": "npm run build && electron-builder --config electron-builder.cjs --win --publish never",
+    "dist:linux": "npm run build && electron-builder --config electron-builder.cjs --linux --publish never"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/ws": "^8.18.1",
+    "electron": "^42.11.13",
+    "electron-builder": "^26.15.3",
+    "typescript": "~6.0.3",
+    "vitest": "^4.1.11"
+  },
+  "allowScripts": {
+    "electron@42.11.13": true,
+    "electron-winstaller@5.4.0": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/larszu/lz-vision-mixer.git"
+  }
+}

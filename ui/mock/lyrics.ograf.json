@@ -1,0 +1,70 @@
+{
+  "$schema": "https://ograf.ebu.io/v1/specification/json-schemas/graphics/schema.json",
+  "id": "lz-lyrics",
+  "version": "0.1.0",
+  "name": "LZ Lyrics",
+  "description": "Song lyrics, one slide per step. Full screen for projection or as a lower third for streams. Reads its slides from lz-presenter (SongBeamer .sng import).",
+  "author": { "name": "Lars Zumpe Medienproduktion" },
+  "main": "graphic.mjs",
+  "supportsRealTime": true,
+  "supportsNonRealTime": false,
+  "stepCount": -1,
+  "customActions": [
+    {
+      "id": "blank",
+      "name": "Blank",
+      "description": "Hide or show the lyrics without leaving the current slide",
+      "schema": {
+        "type": "object",
+        "properties": { "blank": { "type": "boolean", "title": "Blank", "default": true } }
+      }
+    }
+  ],
+  "actionDurations": [
+    { "type": "playAction", "duration": 400 },
+    { "type": "updateAction", "duration": 400 },
+    { "type": "stopAction", "duration": 400 }
+  ],
+  "schema": {
+    "type": "object",
+    "properties": {
+      "title": { "type": "string", "title": "Title", "default": "" },
+      "credit": { "type": "string", "title": "Credit line", "default": "", "hidden": true },
+      "slides": {
+        "type": "array",
+        "title": "Slides",
+        "hidden": true,
+        "default": [],
+        "items": {
+          "type": "object",
+          "properties": {
+            "part": { "type": "string", "title": "Part" },
+            "lines": {
+              "type": "array",
+              "title": "Lines per language",
+              "items": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      },
+      "layout": {
+        "type": "string",
+        "title": "Layout",
+        "enum": ["fullscreen", "lowerthird"],
+        "default": "fullscreen"
+      },
+      "showTranslation": { "type": "boolean", "title": "Show translation", "default": true },
+      "showCredit": { "type": "string", "title": "Credit line", "enum": ["never", "first", "last", "always"], "default": "first" },
+      "fontFamily": { "type": "string", "title": "Font", "default": "'Public Sans', system-ui, 'Segoe UI', Roboto, Arial, sans-serif" },
+      "textColor": { "type": "string", "title": "Text colour", "default": "#ffffff", "gddType": "color-rrggbb" },
+      "translationColor": { "type": "string", "title": "Translation colour", "default": "#c8c8c8", "gddType": "color-rrggbb" },
+      "backdrop": {
+        "type": "string",
+        "title": "Backdrop",
+        "description": "transparent for keying, or a CSS colour",
+        "default": "transparent"
+      },
+      "uppercase": { "type": "boolean", "title": "Upper case", "default": false }
+    }
+  }
+}

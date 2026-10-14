@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+    "rootDir": "src/pages",
+    "outDir": "dist/pages",
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/pages"]
+}

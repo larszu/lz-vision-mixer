@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'">
+<title>LZ Vision Mixer Graphics</title>
+<link rel="stylesheet" href="status.css">
+</head>
+<body data-density="compact">
+<header class="bar">
+  <h1 data-i18n="title">Graphics renderer</h1>
+  <div class="segment" role="radiogroup" aria-label="Theme" id="theme">
+    <button type="button" data-theme-choice="auto" data-i18n="themeAuto">Auto</button>
+    <button type="button" data-theme-choice="light" data-i18n="themeLight">Light</button>
+    <button type="button" data-theme-choice="dark" data-i18n="themeDark">Dark</button>
+  </div>
+</header>
+
+<main>
+  <section class="card" aria-labelledby="h-engine">
+    <div class="row">
+      <h2 id="h-engine" data-i18n="engine">Engine</h2>
+      <span class="pill" id="engine-state"></span>
+    </div>
+    <p class="meta mono" id="engine-url"></p>
+    <p class="meta" id="engine-format"></p>
+  </section>
+
+  <section class="card" aria-labelledby="h-layers">
+    <div class="row">
+      <h2 id="h-layers" data-i18n="layers">Layers</h2>
+      <label class="switch">
+        <input type="checkbox" id="preview">
+        <span data-i18n="showPreview">Show preview</span>
+      </label>
+    </div>
+    <div id="layers" class="layers"></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-library">
+    <div class="row">
+      <h2 id="h-library" data-i18n="library">Library</h2>
+      <div class="actions">
+        <button type="button" class="secondary" id="open-folder" data-i18n="openFolder">Open folder</button>
+        <button type="button" class="primary" id="rescan" data-i18n="rescan">Rescan</button>
+      </div>
+    </div>
+    <ul id="library" class="library"></ul>
+    <details id="warnings-box" hidden>
+      <summary id="warnings-title"></summary>
+      <ul id="warnings" class="warnings"></ul>
+    </details>
+    <details>
+      <summary data-i18n="folders">Graphics folders</summary>
+      <ul id="roots" class="warnings mono"></ul>
+    </details>
+  </section>
+</main>
+<script type="module" src="status.js"></script>
+</body>
+</html>

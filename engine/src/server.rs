@@ -34,6 +34,13 @@ pub fn router(mixer: Shared) -> Router {
         .route("/api/program/{slot}", get(|s, Path(n): Path<usize>| shortcut(s, json!({"cmd":"program","slot":n}))))
         .route("/api/tbar/{value}", get(|s, Path(v): Path<f64>| shortcut(s, json!({"cmd":"tbar","value":v}))))
         .route("/api/overlay/{index}/toggle", get(overlay_toggle))
+        .route("/api/vfa/on", get(|s| shortcut(s, json!({"cmd":"setVfa","enabled":true}))))
+        .route("/api/vfa/off", get(|s| shortcut(s, json!({"cmd":"setVfa","enabled":false}))))
+        .route("/api/vfa/toggle", get(vfa_toggle))
+        .route("/api/gfx/{layer}/play", get(|s, Path(l): Path<usize>| shortcut(s, json!({"cmd":"gfxPlay","layer":l}))))
+        .route("/api/gfx/{layer}/next", get(|s, Path(l): Path<usize>| shortcut(s, json!({"cmd":"gfxPlay","layer":l,"delta":1}))))
+        .route("/api/gfx/{layer}/stop", get(|s, Path(l): Path<usize>| shortcut(s, json!({"cmd":"gfxStop","layer":l}))))
+        .route("/renderer", get(renderer_ws))
         .route("/mjpeg/multiview", get(mjpeg))
         .fallback(static_ui)
         .with_state(mixer)
@@ -64,6 +71,34 @@ async fn shortcut(State(m): State<Shared>, v: serde_json::Value) -> Response {
 async fn overlay_toggle(State(m): State<Shared>, Path(i): Path<usize>) -> Response {
     let on = m.state().overlays.get(i.wrapping_sub(1)).map(|o| !o.on_air).unwrap_or(true);
     shortcut(State(m), json!({"cmd":"overlayOn","index":i,"on":on})).await
+}
+
+async fn vfa_toggle(State(m): State<Shared>) -> Response {
+    let on = !m.state().vfa.config.enabled;
+    shortcut(State(m), json!({"cmd":"setVfa","enabled":on})).await
+}
+
+async fn renderer_ws(State(m): State<Shared>, up: WebSocketUpgrade) -> Response {
+    // Frames arrive by TCP; this socket carries only small JSON messages.
+    up.on_upgrade(move |socket| async move {
+        let (mut tx, mut rx) = socket.split();
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let id = m.renderer_attach(out_tx);
+        let writer = tokio::spawn(async move {
+            while let Some(msg) = out_rx.recv().await {
+                if tx.send(Message::Text(msg.into())).await.is_err() {
+                    break;
+                }
+            }
+        });
+        while let Some(Ok(msg)) = rx.next().await {
+            if let Message::Text(t) = msg {
+                m.renderer_message(&t);
+            }
+        }
+        writer.abort();
+        m.renderer_detach(id);
+    })
 }
 
 async fn ws(State(m): State<Shared>, up: WebSocketUpgrade) -> Response {

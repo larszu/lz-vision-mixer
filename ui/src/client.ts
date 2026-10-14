@@ -1,6 +1,6 @@
 // One WebSocket to the engine, shared by the whole UI through small stores.
 import { useSyncExternalStore } from 'react'
-import { backoffMs, wsUrl } from './helpers'
+import { backoffMs, normalizeLevels, normalizeState, wsUrl } from './helpers'
 import { t } from './i18n'
 import type { Command, Levels, ServerMessage, State } from './types'
 
@@ -59,9 +59,9 @@ function connect() {
     if (msg.type === 'state') {
       // Reset the backoff only once the engine really answers; a proxy can accept the socket and drop it.
       attempt = 0
-      stateStore.set(msg.state)
+      stateStore.set(normalizeState(msg.state))
     }
-    else if (msg.type === 'levels') levelsStore.set(msg.levels)
+    else if (msg.type === 'levels') levelsStore.set(normalizeLevels(msg.levels))
     else if (msg.type === 'error') reportError(msg.message)
   }
   sock.onclose = () => {
@@ -94,6 +94,9 @@ export function send(c: Command) {
 export function dismissError() {
   errorStore.set(null)
 }
+
+/** Current state outside React (keyboard handlers). */
+export const getState = () => stateStore.get()
 
 export const useMixerState = () => useSyncExternalStore(stateStore.subscribe, stateStore.get)
 export const useLevels = () => useSyncExternalStore(levelsStore.subscribe, levelsStore.get)

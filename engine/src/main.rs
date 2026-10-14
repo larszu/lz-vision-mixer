@@ -2,6 +2,7 @@
 //! API and the web UI.
 
 mod easing;
+mod devices;
 mod format;
 mod layout;
 mod mixer;
@@ -9,6 +10,7 @@ mod runner;
 mod server;
 mod specs;
 mod state;
+mod vfa;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -33,6 +35,13 @@ struct Args {
     /// Open the web UI in the browser after start.
     #[arg(long)]
     open: bool,
+    /// First TCP port for graphics frames from the renderer (one per layer).
+    #[arg(long, default_value_t = 4198)]
+    frame_port: u16,
+    /// Start this graphics renderer (the LZ Vision Mixer Graphics app or its
+    /// executable) and connect it.
+    #[arg(long)]
+    renderer: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -50,7 +59,7 @@ async fn main() -> Result<()> {
     } else {
         args.config.or_else(|| dirs::config_dir().map(|d| d.join("lz-vision-mixer").join("config.json")))
     };
-    let mixer = mixer::Mixer::new(format.clone(), config)?;
+    let mixer = mixer::Mixer::new(format.clone(), config, args.frame_port)?;
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("cannot listen on {}", args.listen))?;
@@ -58,6 +67,22 @@ async fn main() -> Result<()> {
     tracing::info!("LZ Vision Mixer {} · {} · {url}", env!("CARGO_PKG_VERSION"), format.name);
     if args.open {
         let _ = open::that(url.replace("0.0.0.0", "127.0.0.1"));
+    }
+    let mut child = None;
+    if let Some(path) = &args.renderer {
+        let engine = format!("ws://127.0.0.1:{}/renderer", args.listen.port());
+        // A macOS .app bundle is started through `open` so it gets its arguments.
+        let mut cmd = if path.extension().is_some_and(|e| e == "app") {
+            let mut c = std::process::Command::new("open");
+            c.arg("-n").arg(path).arg("--args");
+            c
+        } else {
+            std::process::Command::new(path)
+        };
+        match cmd.arg("--engine").arg(&engine).arg("--hidden").spawn() {
+            Ok(c) => child = Some(c),
+            Err(e) => tracing::error!("cannot start the graphics renderer {}: {e}", path.display()),
+        }
     }
     let m = mixer.clone();
     axum::serve(listener, server::router(mixer))
@@ -67,5 +92,8 @@ async fn main() -> Result<()> {
         .await?;
     tracing::info!("stopping outputs");
     tokio::task::spawn_blocking(move || m.shutdown()).await?;
+    if let Some(mut c) = child {
+        let _ = c.kill();
+    }
     Ok(())
 }

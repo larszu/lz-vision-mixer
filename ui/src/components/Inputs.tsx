@@ -45,17 +45,20 @@ export function Inputs({ state }: { state: State }) {
                 className={`btn ${state.preview === s.slot ? 'selected' : ''}`}
                 aria-pressed={state.preview === s.slot}
                 onClick={() => send({ cmd: 'preview', slot: s.slot })}
+                aria-label={`${t('Preview')} ${s.slot}`}
+                title={`${t('Preview')} (${s.slot})`}
               >
-                {t('Preview')}
+                {t('PVW')}
               </button>
               <button
                 type="button"
                 className={`btn ${state.program === s.slot ? 'selected' : ''}`}
                 aria-pressed={state.program === s.slot}
                 onClick={() => send({ cmd: 'program', slot: s.slot })}
-                title={t('Cut straight to program')}
+                aria-label={`${t('Program')} ${s.slot}`}
+                title={`${t('Cut straight to program')} (Shift+${s.slot})`}
               >
-                {t('Program')}
+                {t('PGM')}
               </button>
             </div>
           </article>

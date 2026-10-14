@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { deKeys } from '../src/i18n'
 
-// Every t('…') literal and every preset label needs a German entry.
+// Every t('…') literal and every preset label, hint and shortcut needs a German entry.
 describe('German translation', () => {
   it('covers every UI string', () => {
     const src = join(__dirname, '../src')
@@ -14,7 +14,9 @@ describe('German translation', () => {
     for (const f of files) {
       const text = readFileSync(join(src, f), 'utf8')
       for (const m of text.matchAll(/\bt\('([^']+)'\)/g)) if (!keys.has(m[1])) missing.push(`${f}: ${m[1]}`)
-      if (f === 'helpers.ts') for (const m of text.matchAll(/label: '([^']+)'/g)) if (!keys.has(m[1])) missing.push(`${f}: ${m[1]}`)
+      // Data tables whose strings go through t() at render time.
+      if (f === 'helpers.ts' || f === 'vfa.ts')
+        for (const m of text.matchAll(/\b(?:label|hint|action): '([^']+)'/g)) if (!keys.has(m[1])) missing.push(`${f}: ${m[1]}`)
     }
     expect(missing).toEqual([])
   })

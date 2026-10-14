@@ -1,5 +1,6 @@
 // Pure helpers: no DOM, no React, so they can be unit-tested in Node.
-import type { Capabilities, Rect } from './types'
+import type { Capabilities, Command, GraphicInfo, GraphicsLayer, Levels, Rect, State } from './types'
+import { VFA_DEFAULTS } from './vfa'
 
 /* ---------- Multiview layout (docs/api.md, 1280x720) ---------- */
 
@@ -88,9 +89,15 @@ export type KeyAction =
   | { kind: 'cut' }
   | { kind: 'auto' }
   | { kind: 'ftb' }
+  | { kind: 'vfa' }
+  | { kind: 'gfxPlay'; layer: number }
+  | { kind: 'gfxStop'; layer: number }
+  | { kind: 'help' }
 
 export interface KeyLike {
   code: string
+  /** Produced character; only used for "?", which sits on different keys per layout. */
+  key?: string
   shiftKey: boolean
   ctrlKey: boolean
   metaKey: boolean
@@ -102,11 +109,83 @@ export function keyToAction(e: KeyLike): KeyAction | null {
   if (e.ctrlKey || e.metaKey || e.altKey) return null
   const m = /^(?:Digit|Numpad)([1-8])$/.exec(e.code)
   if (m) return { kind: e.shiftKey ? 'program' : 'preview', slot: Number(m[1]) }
+  if (e.key === '?') return { kind: 'help' }
   if (e.shiftKey) return null
   if (e.code === 'Space') return { kind: 'cut' }
   if (e.code === 'Enter' || e.code === 'NumpadEnter') return { kind: 'auto' }
   if (e.code === 'KeyF') return { kind: 'ftb' }
+  if (e.code === 'KeyV') return { kind: 'vfa' }
+  if (e.code === 'KeyG') return { kind: 'gfxPlay', layer: 1 }
+  if (e.code === 'KeyH') return { kind: 'gfxStop', layer: 1 }
   return null
+}
+
+/** Keyboard shortcuts for the help dialog: keys shown as written, action as an English UI string. */
+export const SHORTCUTS: { keys: string; action: string }[] = [
+  { keys: '1 … 8', action: 'Input to preview' },
+  { keys: 'Shift + 1 … 8', action: 'Input straight to programme' },
+  { keys: 'Space', action: 'Cut' },
+  { keys: 'Enter', action: 'Auto transition' },
+  { keys: 'F', action: 'Fade to black' },
+  { keys: 'V', action: 'Video follows audio on/off' },
+  { keys: 'G', action: 'Graphics layer 1: in, then next step' },
+  { keys: 'H', action: 'Graphics layer 1: out' },
+  { keys: '?', action: 'Show shortcuts' },
+]
+
+/* ---------- Graphics ---------- */
+
+/**
+ * What "play" means for a layer right now: the first play takes the graphic
+ * in; while it plays, a multi-step graphic advances one step and a
+ * single-step one does nothing.
+ */
+export function gfxPlayCommand(layer: GraphicsLayer | undefined, info: GraphicInfo | undefined): Command | null {
+  if (!layer || !layer.graphicId) return null
+  if (layer.status === 'loading' || layer.status === 'error' || layer.status === 'empty') return null
+  if (layer.status !== 'playing') return { cmd: 'gfxPlay', layer: layer.layer }
+  if (info && info.stepCount === 1) return null
+  return { cmd: 'gfxPlay', layer: layer.layer, delta: 1 }
+}
+
+export function gfxHasNext(layer: GraphicsLayer, info: GraphicInfo | undefined): boolean {
+  if (layer.status !== 'playing' || !info) return false
+  if (info.stepCount === -1) return true
+  return info.stepCount > 1 && layer.step < info.stepCount - 1
+}
+
+/* ---------- Older engines ---------- */
+
+/** Fills the parts of State an older engine does not send yet, so the UI never crashes on them. */
+export function normalizeState(raw: State): State {
+  const s = raw as Partial<State> & State
+  return {
+    ...s,
+    audioDevices: s.audioDevices ?? [],
+    mics:
+      s.mics ??
+      Array.from({ length: 8 }, (_, i) => ({
+        mic: i + 1,
+        name: '',
+        device: null,
+        channel: 0,
+        status: 'empty' as const,
+        error: null,
+        volume: 1,
+        muted: false,
+        inProgram: true,
+      })),
+    vfa: s.vfa ?? { ...VFA_DEFAULTS, enabled: false, rules: [], wideSlot: null, transition: 'cut', speaking: null },
+    graphics: s.graphics ?? {
+      rendererConnected: false,
+      library: [],
+      layers: [1, 2].map((layer) => ({ layer, graphicId: null, data: {}, status: 'empty' as const, step: 0, error: null })),
+    },
+  }
+}
+
+export function normalizeLevels(raw: Levels): Levels {
+  return { ...raw, mics: raw.mics ?? {}, speech: raw.speech ?? {} }
 }
 
 /* ---------- Presets ---------- */

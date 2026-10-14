@@ -4,10 +4,14 @@ import {
   faderToGain,
   formatDb,
   gainToFader,
+  gfxHasNext,
+  gfxPlayCommand,
   keyToAction,
   meterFill,
   mvSlotBox,
   needMet,
+  normalizeLevels,
+  normalizeState,
   specNeed,
   tallyOf,
   wsUrl,
@@ -60,6 +64,13 @@ describe('keyboard', () => {
     expect(keyToAction(key('Enter'))).toEqual({ kind: 'auto' })
     expect(keyToAction(key('KeyF'))).toEqual({ kind: 'ftb' })
   })
+  it('maps V, G, H and ?', () => {
+    expect(keyToAction(key('KeyV'))).toEqual({ kind: 'vfa' })
+    expect(keyToAction(key('KeyG'))).toEqual({ kind: 'gfxPlay', layer: 1 })
+    expect(keyToAction(key('KeyH'))).toEqual({ kind: 'gfxStop', layer: 1 })
+    expect(keyToAction({ ...key('Minus', true), key: '?' })).toEqual({ kind: 'help' })
+    expect(keyToAction(key('KeyG', true))).toBeNull()
+  })
   it('ignores modified keys', () => {
     expect(keyToAction({ ...key('KeyF'), metaKey: true })).toBeNull()
     expect(keyToAction(key('Space', true))).toBeNull()
@@ -105,5 +116,51 @@ describe('tally', () => {
   it('puts preview on air while mixing', () => {
     expect(tallyOf(2, { ...base, inTransition: true })).toBe('program')
     expect(tallyOf(2, { ...base, tbar: 0.3 })).toBe('program')
+  })
+})
+
+describe('graphics play', () => {
+  const layer = (status: 'empty' | 'loading' | 'ready' | 'playing' | 'stopped' | 'error', step = 0) => ({
+    layer: 1,
+    graphicId: 'g',
+    data: {},
+    status,
+    step,
+    error: null,
+  })
+  const info = (stepCount: number) => ({ id: 'g', name: 'G', description: '', path: '', schema: null, stepCount, customActions: [] })
+  it('takes a loaded graphic in', () => {
+    expect(gfxPlayCommand(layer('ready'), info(1))).toEqual({ cmd: 'gfxPlay', layer: 1 })
+    expect(gfxPlayCommand(layer('stopped'), info(3))).toEqual({ cmd: 'gfxPlay', layer: 1 })
+  })
+  it('advances a multi-step graphic while on air, not a single-step one', () => {
+    expect(gfxPlayCommand(layer('playing'), info(3))).toEqual({ cmd: 'gfxPlay', layer: 1, delta: 1 })
+    expect(gfxPlayCommand(layer('playing'), info(-1))).toEqual({ cmd: 'gfxPlay', layer: 1, delta: 1 })
+    expect(gfxPlayCommand(layer('playing'), info(1))).toBeNull()
+  })
+  it('does nothing without a usable graphic', () => {
+    expect(gfxPlayCommand(layer('loading'), info(1))).toBeNull()
+    expect(gfxPlayCommand(layer('error'), info(1))).toBeNull()
+    expect(gfxPlayCommand({ ...layer('empty'), graphicId: null }, undefined)).toBeNull()
+    expect(gfxPlayCommand(undefined, undefined)).toBeNull()
+  })
+  it('knows when there is a next step', () => {
+    expect(gfxHasNext(layer('playing', 1), info(3))).toBe(true)
+    expect(gfxHasNext(layer('playing', 2), info(3))).toBe(false)
+    expect(gfxHasNext(layer('playing', 9), info(-1))).toBe(true)
+    expect(gfxHasNext(layer('ready'), info(3))).toBe(false)
+  })
+})
+
+describe('older engines', () => {
+  it('fills mics, VFA and graphics when the engine does not send them', () => {
+    const s = normalizeState({ version: '0.1.0' } as never)
+    expect(s.mics).toHaveLength(8)
+    expect(s.audioDevices).toEqual([])
+    expect(s.vfa.enabled).toBe(false)
+    expect(s.vfa.thresholdDb).toBe(-42)
+    expect(s.graphics.layers.map((l) => l.layer)).toEqual([1, 2])
+    expect(s.graphics.rendererConnected).toBe(false)
+    expect(normalizeLevels({ slots: {}, master: [-90, -90] } as never)).toMatchObject({ mics: {}, speech: {} })
   })
 })
