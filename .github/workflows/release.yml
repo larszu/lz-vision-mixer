@@ -38,10 +38,20 @@ jobs:
       - name: GStreamer (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        # Official MSIs straight from gstreamer.freedesktop.org; the Chocolatey
+        # package failed on a stale checksum (v0.3.0 run).
         run: |
-          choco install -y gstreamer gstreamer-devel pkgconfiglite --no-progress
-          "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          "PKG_CONFIG_PATH=C:\Program Files\gstreamer\1.0\msvc_x86_64\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $v = "1.26.9"
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc"
+          foreach ($m in @("gstreamer-1.0-msvc-x86_64-$v.msi", "gstreamer-1.0-devel-msvc-x86_64-$v.msi")) {
+            Invoke-WebRequest "$base/$m" -OutFile $m
+            Start-Process msiexec -ArgumentList "/i", $m, "/qn", "ADDLOCAL=ALL" -Wait
+          }
+          choco install -y pkgconfiglite --no-progress
+          $root = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+          if (-not (Test-Path "$root\lib\pkgconfig\gstreamer-1.0.pc")) { throw "GStreamer devel files missing under $root" }
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
       - uses: dtolnay/rust-toolchain@stable
       - name: Version from tag
         if: startsWith(github.ref, 'refs/tags/v')
