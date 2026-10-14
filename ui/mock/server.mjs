@@ -49,6 +49,7 @@ const state = {
   transition: { kind: 'mix', durationMs: 1000, easing: { family: 'cubic', direction: 'inOut' } },
   inTransition: false,
   tbar: 0,
+  tbarInverted: false,
   ftb: false,
   overlays: [
     { index: 1, slot: 6, onAir: false, rect: { x: 0.66, y: 0.05, w: 0.3, h: 0.3 }, transition: 'fade', durationMs: 500 },
@@ -338,7 +339,9 @@ function completeTransition() {
   state.program = state.preview
   state.preview = p
   state.inTransition = false
-  state.tbar = 0
+  // Like a panel lever: the far end becomes the start of the next transition.
+  state.tbarInverted = !state.tbarInverted
+  state.tbar = state.tbarInverted ? 1 : 0
 }
 
 function runAuto() {
@@ -348,12 +351,13 @@ function runAuto() {
     return
   }
   const start = Date.now()
-  const startT = state.tbar
+  const from = state.tbarInverted ? 1 : 0
+  const startP = Math.abs(state.tbar - from)
   state.inTransition = true
   anim = setInterval(() => {
-    const p = startT + (Date.now() - start) / state.transition.durationMs
+    const p = startP + (Date.now() - start) / state.transition.durationMs
     if (p >= 1) completeTransition()
-    else state.tbar = p
+    else state.tbar = state.tbarInverted ? 1 - p : p
     pushState()
   }, 40)
 }
@@ -509,7 +513,7 @@ function apply(c) {
       if (anim) clearInterval(anim)
       anim = null
       state.inTransition = false
-      state.tbar = 0
+      state.tbar = state.tbarInverted ? 1 : 0
       state.program = c.slot
       vfaSim.manual()
       break
@@ -531,8 +535,10 @@ function apply(c) {
       need(typeof c.value === 'number', 'Missing value')
       need(!anim, 'Auto transition running')
       const v = Math.max(0, Math.min(1, c.value))
-      if (v >= 1) completeTransition()
-      else state.tbar = v
+      const p = state.tbarInverted ? 1 - v : v
+      state.tbar = v
+      state.inTransition = p > 0
+      if (p >= 1) completeTransition()
       vfaSim.manual()
       break
     }

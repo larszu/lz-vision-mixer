@@ -150,6 +150,8 @@ pub struct State {
     pub transition: Transition,
     pub in_transition: bool,
     pub tbar: f64,
+    /// The lever rests at the bottom (1) and the next transition runs upwards.
+    pub tbar_inverted: bool,
     pub ftb: bool,
     pub overlays: Vec<Overlay>,
     pub outputs: Vec<Output>,

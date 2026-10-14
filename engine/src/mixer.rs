@@ -91,7 +91,11 @@ struct Core {
     trans_epoch: u64,
     in_transition: bool,
     trans_k: f64,
+    /// Lever position 0..1, like the T-bar of a panel.
     tbar: f64,
+    /// After every completed transition the lever's far end becomes its
+    /// start: the next transition runs the other way.
+    tbar_inverted: bool,
     ftb: bool,
     ftb_level: f64,
     ftb_epoch: u64,
@@ -362,6 +366,7 @@ impl Mixer {
             in_transition: false,
             trans_k: 0.0,
             tbar: 0.0,
+            tbar_inverted: false,
             ftb: false,
             ftb_level: 0.0,
             ftb_epoch: 0,
@@ -573,6 +578,7 @@ impl Mixer {
             transition: c.transition.clone(),
             in_transition: c.in_transition,
             tbar: c.tbar,
+            tbar_inverted: c.tbar_inverted,
             ftb: c.ftb,
             overlays: c.overlays.iter().map(|o| o.o.clone()).collect(),
             outputs: c.outputs.iter().map(|o| o.out.clone()).collect(),
@@ -663,7 +669,7 @@ impl Mixer {
                 c.si(slot)?;
                 c.trans_epoch += 1;
                 c.in_transition = false;
-                c.tbar = 0.0;
+                c.tbar = if c.tbar_inverted { 1.0 } else { 0.0 };
                 if c.preview == Some(slot) {
                     c.preview = c.program;
                 }
@@ -1273,7 +1279,7 @@ impl Mixer {
         let Some(next) = c.preview else { bail!("nothing on preview") };
         c.trans_epoch += 1;
         c.in_transition = false;
-        c.tbar = 0.0;
+        c.tbar = if c.tbar_inverted { 1.0 } else { 0.0 };
         c.preview = c.program;
         c.program = Some(next);
         self.apply_program(&c);
@@ -1316,7 +1322,7 @@ impl Mixer {
                         return;
                     }
                     c.trans_k = k;
-                    c.tbar = p;
+                    c.tbar = if c.tbar_inverted { 1.0 - p } else { p };
                     m.apply_transition(&c, t.kind, k);
                     m.apply_audio(&c);
                 }
@@ -1343,7 +1349,8 @@ impl Mixer {
             }
             c.in_transition = false;
             c.trans_k = 0.0;
-            c.tbar = 0.0;
+            c.tbar_inverted = !c.tbar_inverted;
+            c.tbar = if c.tbar_inverted { 1.0 } else { 0.0 };
             let next = c.preview;
             c.preview = c.program;
             c.program = next;
@@ -1358,13 +1365,16 @@ impl Mixer {
     /// the hand is the curve.
     fn tbar(&self, value: f64) -> Result<()> {
         let v = value.clamp(0.0, 1.0);
-        let epoch = {
+        let (epoch, k) = {
             let mut c = self.core.lock().unwrap();
             if c.preview.is_none() || c.preview == c.program || c.program.is_none() {
                 bail!("nothing new on preview");
             }
+            // Progress counts from whichever end the lever rests at.
+            let k = if c.tbar_inverted { 1.0 - v } else { v };
+            c.tbar = v;
             if !c.in_transition {
-                if v <= 0.0 {
+                if k <= 0.0 {
                     return Ok(());
                 }
                 c.trans_epoch += 1;
@@ -1374,20 +1384,20 @@ impl Mixer {
                 TransitionKind::Cut => TransitionKind::Mix,
                 k => k,
             };
-            c.tbar = v;
-            c.trans_k = v;
-            if v <= 0.0 {
+            c.trans_k = k;
+            if k <= 0.0 {
+                // Back to the start: nothing changes on air.
                 c.in_transition = false;
                 c.trans_k = 0.0;
                 self.apply_program(&c);
                 self.apply_audio(&c);
                 return Ok(());
             }
-            self.apply_transition(&c, kind, v);
+            self.apply_transition(&c, kind, k);
             self.apply_audio(&c);
-            c.trans_epoch
+            (c.trans_epoch, k)
         };
-        if v >= 1.0 {
+        if k >= 1.0 {
             self.finish_transition(epoch);
         }
         Ok(())
@@ -2074,7 +2084,7 @@ impl Mixer {
         c.si(slot)?;
         c.trans_epoch += 1;
         c.in_transition = false;
-        c.tbar = 0.0;
+        c.tbar = if c.tbar_inverted { 1.0 } else { 0.0 };
         c.program = Some(slot);
         self.apply_program(&c);
         self.apply_audio(&c);
