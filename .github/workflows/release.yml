@@ -62,9 +62,14 @@ jobs:
             for ($i = 0; $i -lt 200; $i++) {
               $have = if (Test-Path $f) { (Get-Item $f).Length } else { 0 }
               if ($have -eq $total) { break }
+              # A resume the server answered with the whole file again leaves it
+              # too long; it can never match, so start that file over.
+              if ($have -gt $total) { Remove-Item $f; Write-Host "$m was too long ($have > $total), restarting" }
               curl.exe -sfL --http1.1 -C - -o $f "$base/$m"
             }
-            if ((Get-Item $f).Length -ne $total) { throw "download of $m incomplete" }
+            $have = if (Test-Path $f) { (Get-Item $f).Length } else { 0 }
+            Write-Host "$m : $have of $total bytes"
+            if ($have -ne $total) { throw "download of $m incomplete ($have of $total bytes)" }
             Start-Process msiexec -ArgumentList "/i", $f, "/qn", "ADDLOCAL=ALL" -Wait
           }
           choco install -y pkgconfiglite --no-progress
