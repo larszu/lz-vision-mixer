@@ -39,12 +39,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         # Official MSIs straight from gstreamer.freedesktop.org; the Chocolatey
-        # package failed on a stale checksum (v0.3.0 run).
+        # package failed on a truncated download (v0.3.0 run).
         run: |
           $v = "1.26.9"
           $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc"
           foreach ($m in @("gstreamer-1.0-msvc-x86_64-$v.msi", "gstreamer-1.0-devel-msvc-x86_64-$v.msi")) {
-            Invoke-WebRequest "$base/$m" -OutFile $m
+            # The server drops connections now and then; retry until the file is whole.
+            curl.exe -fL --retry 8 --retry-all-errors --retry-delay 5 -o $m "$base/$m"
+            if ($LASTEXITCODE -ne 0) { throw "download of $m failed" }
             Start-Process msiexec -ArgumentList "/i", $m, "/qn", "ADDLOCAL=ALL" -Wait
           }
           choco install -y pkgconfiglite --no-progress
