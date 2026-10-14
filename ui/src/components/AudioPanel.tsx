@@ -1,8 +1,9 @@
 import { send, useLevels } from '../client'
 import { formatDb } from '../helpers'
 import { t } from '../i18n'
+import { clampDelay, DELAY_MAX_MS } from '../strip'
 import type { State } from '../types'
-import { Fader, Meter, Panel } from './ui'
+import { Fader, Meter, NumberField, Panel } from './ui'
 
 function Strip({
   name,
@@ -14,6 +15,8 @@ function Strip({
   onMute,
   onAfv,
   master,
+  delayMs,
+  onDelay,
 }: {
   name: string
   volume: number
@@ -24,6 +27,8 @@ function Strip({
   onMute: () => void
   onAfv?: () => void
   master?: boolean
+  delayMs?: number
+  onDelay?: (ms: number) => void
 }) {
   return (
     <div className={`strip ${master ? 'strip-master' : ''} ${muted ? 'muted' : ''}`}>
@@ -49,6 +54,19 @@ function Strip({
           {t('AFV')}
         </button>
       )}
+      {onDelay && (
+        <NumberField
+          className="field-strip-delay"
+          label={t('Delay')}
+          title={t('Lip-sync delay, 0 to 500 ms')}
+          unit="ms"
+          min={0}
+          max={DELAY_MAX_MS}
+          step={1}
+          value={delayMs ?? 0}
+          onCommit={(v) => onDelay(clampDelay(v))}
+        />
+      )}
     </div>
   )
 }
@@ -57,6 +75,7 @@ export function AudioPanel({ state }: { state: State }) {
   const levels = useLevels()
   return (
     <Panel title={t('Audio')} className="audio">
+      <p className="hint hint-top">{t('Delay per input: lip sync, 0 to 500 ms.')}</p>
       <div className="strips">
         {state.slots.map((s) => (
           <Strip
@@ -69,6 +88,8 @@ export function AudioPanel({ state }: { state: State }) {
             onVolume={(volume) => send({ cmd: 'audio', slot: s.slot, volume })}
             onMute={() => send({ cmd: 'audio', slot: s.slot, muted: !s.audio.muted })}
             onAfv={() => send({ cmd: 'audio', slot: s.slot, afv: !s.audio.afv })}
+            delayMs={s.audio.delayMs}
+            onDelay={(delayMs) => send({ cmd: 'audio', slot: s.slot, delayMs })}
           />
         ))}
         <Strip

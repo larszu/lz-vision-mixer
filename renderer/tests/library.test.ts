@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -101,12 +101,25 @@ describe('scanLibrary', () => {
     const r = await scanLibrary([path.join(__dirname, '..', 'graphics')])
     expect(r.warnings).toEqual([])
     const ids = r.entries.map((e) => e.info.id).sort()
-    expect(ids).toEqual(['lz-bug', 'lz-lower-third', 'lz-lyrics', 'lz-title'])
+    expect(ids).toEqual(['lz-bug', 'lz-captions', 'lz-lower-third', 'lz-lyrics', 'lz-title'])
     const lyrics = r.entries.find((e) => e.info.id === 'lz-lyrics')!
     expect(lyrics.info.stepCount).toBe(-1)
     expect(lyrics.info.customActions.map((c) => c.id)).toEqual(['blank'])
     const lt = r.entries.find((e) => e.info.id === 'lz-lower-third')!
     expect(Object.keys((lt.info.schema as { properties: object }).properties)).toEqual(['name', 'title', 'extra', 'position', 'accentDot', 'style'])
+  })
+  it('bundles the captions graphic with the fields the engine and the UI rely on', async () => {
+    const file = path.join(__dirname, '..', 'graphics', 'lz-captions', 'captions.ograf.json')
+    const r = parseManifest(JSON.parse(readFileSync(file, 'utf8')), file)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.warnings).toEqual([])
+    expect(r.entry.info).toMatchObject({ id: 'lz-captions', stepCount: 1, customActions: [] })
+    const schema = r.entry.info.schema as { properties: Record<string, { type: string; enum?: string[] }> }
+    expect(Object.keys(schema.properties)).toEqual(['text', 'speaker', 'autoHideS', 'position'])
+    expect(schema.properties.text.type).toBe('string')
+    expect(schema.properties.position.enum).toEqual(['bottom', 'top'])
+    expect(schemaDefaults(schema)).toEqual({ text: '', speaker: '', autoHideS: 6, position: 'bottom' })
   })
 })
 

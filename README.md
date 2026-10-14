@@ -19,13 +19,15 @@ More views: [video follows audio](docs/ui-vfa.png) · [graphics](docs/ui-graphic
 - **Preview / programme** like a hardware mixer: Cut, Auto, T-bar, fade to black. Transitions: cut, mix, dip through black, push left/right, slide left/right, zoom — each with one of eleven easing curves (linear, sine, quad, cubic, quart, quint, expo, circ, back, elastic, bounce; in, out or in-out). The T-bar drives the transition by hand, without a curve. After a transition, programme and preview swap.
 - **Two overlays** above the programme (downstream key or picture-in-picture), any input at any position and size, in and out with cut, fade, fly from four sides or zoom.
 - **Audio**: one fader, mute and audio-follow-video per input plus master, with peak meters. With audio-follow-video the input is heard while it is on programme, and crossfades along with a transition.
-- **Microphones**: up to eight channels from audio interfaces (CoreAudio, WASAPI, PulseAudio/PipeWire) — one channel of one device each, with fader, mute and a switch whether the mic goes into the programme audio.
+- **Microphones**: up to eight channels from audio interfaces (CoreAudio, WASAPI, PulseAudio/PipeWire), and so also Dante through Dante Virtual Soundcard or a Dante card — one channel of one device each, with fader, mute and a switch whether the mic goes into the programme audio.
+- **Channel strip per microphone**: RNNoise speech denoising, high-pass, gate with hold, compressor with soft knee, makeup gain — written for speech, tested on its own.
+- **Lip-sync delay** per input and per microphone (0–500 ms).
 - **Video follows audio** for podcasts, talk rounds and panels: each microphone (or an input's own audio) belongs to a camera. The mixer cuts to whoever speaks, judged on pre-fader levels:
   - a speaker must be above the threshold and clearly louder than everyone else (bleed into the neighbour's mic does not count), and must hold for the attack time — a cough does not cut;
   - every shot stays for a minimum time;
   - cross-talk and longer silence go to the wide shot; with a maximum shot time set, a long monologue gets a short wide shot in between;
   - cut or the selected transition with its curve; a manual cut restarts the minimum shot time, video follows audio keeps running. It never starts by itself after a restart.
-- **Graphics in EBU OGraf**: two graphics layers above everything except fade to black, with per-pixel transparency. Lower thirds, bugs and titles are OGraf graphics (any OGraf v1 graphic works, including lz-presenter's lyrics), played by the graphics renderer — a small companion app (`renderer/`) that renders them and sends the frames to the engine. Load, play, next step, update on air, custom actions, out. Bundled: lower third, corner bug and title card in the Lars Zumpe Medienproduktion design.
+- **Graphics in EBU OGraf**: two graphics layers above everything except fade to black, with per-pixel transparency. Lower thirds, bugs and titles are OGraf graphics (any OGraf v1 graphic works, including lz-presenter's lyrics), played by the graphics renderer — a small companion app (`renderer/`) that renders them and sends the frames to the engine. Load, play, next step, update on air, custom actions, out. Bundled: lower third, corner bug, title card and live captions in the Lars Zumpe Medienproduktion design.
 - **Multiview** 1280×720: preview and programme on top, the eight inputs below. Shown in the UI, and available as an SDI output.
 - **Outputs**, any number at the same time, added and removed while running:
   - `decklink:<n>` — programme to SDI with embedded audio, in the programme format
@@ -33,8 +35,11 @@ More views: [video follows audio](docs/ui-vfa.png) · [graphics](docs/ui-graphic
   - `ndi:<name>`
   - `srt://host:port?mode=listener` — H.264/AAC in MPEG-TS
   - `rtmp://server/app/key`
-  - `record:<file>.mp4` (H.264/AAC, fragmented so a crash still leaves a playable file) or `record:<file>.mov` (ProRes 422 HQ, 24-bit PCM)
+  - `record:<file>.mp4` (H.264/AAC; the index is rewritten every five seconds, so a crash still leaves a playable file) or `record:<file>.mov` (ProRes 422 HQ, 24-bit PCM)
   - Hardware encoders when present: VideoToolbox (macOS), NVENC, Quick Sync; otherwise x264.
+- **Live captions** from the intercom: its transcription sends every line as OSC (`/lzvm/caption`); the mixer loads the bundled captions graphic by itself and shows the text in the programme.
+- **Audio output** of the programme to an audio interface or virtual device (`audio:<device>`) — into the intercom's Program channel, or for monitoring.
+- **OSC** in and out: the same commands under `/lzvm/…`, tally and status as feedback to any number of targets — for TouchOSC, UnableSet (`oscOnEnter` per song), the intercom's keyword rules, lighting desks.
 - **Control**: web UI at `http://127.0.0.1:4195`, WebSocket and HTTP API ([docs/api.md](docs/api.md)), short GET URLs for Companion (`/api/cut`, `/api/auto`, `/api/preview/3`, `/api/overlay/1/toggle`, `/api/vfa/toggle`, `/api/gfx/1/play`, `/api/gfx/1/next`, `/api/gfx/1/stop` …).
 - Inputs, microphones, names, audio settings, transition, overlay and video-follows-audio settings are remembered between runs. Outputs and video follows audio are not started automatically.
 
@@ -61,7 +66,7 @@ The UI shows which of DeckLink, NDI, SRT and the encoders this computer can use.
 
 ## Status
 
-Tested on macOS (Apple M1 Pro) with test patterns, SRT out→in, NDI detection, recording to MP4 and ProRes, transitions, overlays, fade to black, a microphone of the built-in interface, video follows audio (speaker, silence → wide) and the bundled OGraf lower third through the renderer. **Not yet tested: DeckLink hardware (no card at hand), NDI with an installed runtime, multi-channel audio interfaces and Dante Virtual Soundcard, a real podcast with several speakers, Windows and Linux builds on real machines, long runs.** The audio latency through the mixer has not been measured yet; it suits the programme mix for streaming and recording, not PA or in-ear monitoring in the room. On the M1 Pro, three 1080p50 test inputs with multiview take about two CPU cores.
+Tested on macOS (Apple M1 Pro) with test patterns, SRT out→in, NDI detection, recording to MP4 and ProRes, transitions, overlays, fade to black, a microphone of the built-in interface, video follows audio (speaker, silence → wide) and the bundled OGraf lower third through the renderer. **Not yet tested: DeckLink hardware (no card at hand), NDI with an installed runtime, multi-channel audio interfaces and Dante Virtual Soundcard, a real podcast with several speakers, Windows and Linux builds on real machines, long runs.** Audio and picture in the programme are within 2–5 ms of each other (measured on a ProRes/PCM recording) and within 36–53 ms in MP4 recordings, most of which is the AAC encoder start. The audio path suits the programme mix for streaming and recording, not PA or in-ear monitoring in the room. On the M1 Pro, three 1080p50 test inputs with multiview take about two CPU cores.
 
 ## SMPTE ST 2110
 

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://ograf.ebu.io/v1/specification/json-schemas/graphics/schema.json",
+  "id": "lz-captions",
+  "version": "1.0.0",
+  "name": "LZ Captions",
+  "description": "Live captions for speech: up to two lines in the safe area, new text replaces the old with a short cross-fade; long text keeps its last two lines. Feed it with updateAction {\"text\"} (OSC /lzvm/caption). Lars Zumpe Medienproduktion design.",
+  "author": { "name": "Lars Zumpe Medienproduktion", "url": "https://zumpelars.de" },
+  "main": "graphic.mjs",
+  "supportsRealTime": true,
+  "supportsNonRealTime": false,
+  "stepCount": 1,
+  "actionDurations": [
+    { "type": "playAction", "duration": 300 },
+    { "type": "updateAction", "duration": 340 },
+    { "type": "stopAction", "duration": 300 }
+  ],
+  "schema": {
+    "type": "object",
+    "properties": {
+      "text": { "type": "string", "title": "Text", "gddType": "multi-line", "default": "" },
+      "speaker": { "type": "string", "title": "Speaker (small, optional)", "default": "" },
+      "autoHideS": {
+        "type": "number",
+        "title": "Hide after",
+        "description": "Seconds without new text until the captions hide; 0 = never",
+        "minimum": 0,
+        "maximum": 120,
+        "default": 6
+      },
+      "position": {
+        "type": "string",
+        "title": "Position",
+        "enum": ["bottom", "top"],
+        "gddOptions": { "labels": { "bottom": "Bottom", "top": "Top" } },
+        "default": "bottom"
+      }
+    }
+  }
+}

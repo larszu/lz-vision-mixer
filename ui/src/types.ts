@@ -19,7 +19,7 @@ export interface Slot {
   spec: string | null
   status: 'empty' | 'starting' | 'running' | 'error'
   error: string | null
-  audio: { volume: number; muted: boolean; afv: boolean }
+  audio: { volume: number; muted: boolean; afv: boolean; delayMs: number }
 }
 
 export interface Rect {
@@ -69,6 +69,33 @@ export interface Mic {
   volume: number
   muted: boolean
   inProgram: boolean
+  /** Lip-sync delay 0..500 ms. */
+  delayMs: number
+  strip: Strip
+}
+
+/** Mic channel strip: denoise → high-pass → gate → compressor → makeup. */
+export interface Strip {
+  /** High-pass corner 20..400 Hz, 0 = off. */
+  hpfHz: number
+  gate: boolean
+  gateThresholdDb: number
+  gateRangeDb: number
+  comp: boolean
+  compThresholdDb: number
+  compRatio: number
+  compAttackMs: number
+  compReleaseMs: number
+  makeupDb: number
+  /** RNNoise; switching it restarts the mic briefly. */
+  denoise: boolean
+}
+
+export interface Osc {
+  /** Receive address ("127.0.0.1:4210"), null = off. */
+  listen: string | null
+  /** Feedback targets, "host:port". */
+  targets: string[]
 }
 
 export interface VfaRule {
@@ -150,9 +177,12 @@ export interface State {
   master: { volume: number; muted: boolean }
   capabilities: Capabilities
   audioDevices: AudioDevice[]
+  /** Audio outputs, for the `audio:<id>` output spec. */
+  audioOutputs: AudioDevice[]
   mics: Mic[]
   vfa: Vfa
   graphics: Graphics
+  osc: Osc
 }
 
 export interface Levels {
@@ -177,13 +207,15 @@ export type Command =
   | { cmd: 'ftb' }
   | { cmd: 'overlay'; index: number; slot?: number | null; rect?: Rect; transition?: OverlayTransition; durationMs?: number }
   | { cmd: 'overlayOn'; index: number; on: boolean }
-  | { cmd: 'audio'; slot: number; volume?: number; muted?: boolean; afv?: boolean }
+  | { cmd: 'audio'; slot: number; volume?: number; muted?: boolean; afv?: boolean; delayMs?: number }
   | { cmd: 'master'; volume?: number; muted?: boolean }
   | { cmd: 'addOutput'; spec: string }
   | { cmd: 'removeOutput'; id: string }
   | { cmd: 'setMic'; mic: number; device: string; channel: number; name?: string }
   | { cmd: 'clearMic'; mic: number }
-  | { cmd: 'micAudio'; mic: number; volume?: number; muted?: boolean; inProgram?: boolean }
+  | { cmd: 'renameMic'; mic: number; name: string }
+  | { cmd: 'micAudio'; mic: number; volume?: number; muted?: boolean; inProgram?: boolean; delayMs?: number }
+  | { cmd: 'micStrip'; mic: number; strip: Partial<Strip> }
   | { cmd: 'refreshDevices' }
   | ({ cmd: 'setVfa'; enabled?: boolean; rules?: VfaRule[]; wideSlot?: number | null; transition?: VfaTransition } & Partial<VfaSettings>)
   | { cmd: 'gfxLoad'; layer: number; graphicId: string; data?: Record<string, unknown> }
@@ -193,6 +225,7 @@ export type Command =
   | { cmd: 'gfxCustom'; layer: number; id: string; payload?: Record<string, unknown> }
   | { cmd: 'gfxClear'; layer: number }
   | { cmd: 'gfxRescan' }
+  | { cmd: 'setOscTargets'; targets: string[] }
 
 export type ServerMessage =
   | { type: 'state'; state: State }

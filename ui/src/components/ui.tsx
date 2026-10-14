@@ -44,6 +44,11 @@ const ICONS = {
   refresh: ['M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8', 'M21 3v5h-5', 'M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16', 'M8 16H3v5'],
   plus: ['M5 12h14', 'M12 5v14'],
   x: ['M18 6 6 18', 'm6 6 12 12'],
+  settings: [
+    'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z',
+    'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z',
+  ],
+  chevron: ['m6 9 6 6 6-6'],
   keyboard: ['M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z', 'M6 9h.01', 'M10 9h.01', 'M14 9h.01', 'M18 9h.01', 'M8 13h.01', 'M12 13h.01', 'M16 13h.01', 'M7 16h10'],
 } as const
 
@@ -85,9 +90,11 @@ export function NumberField({
   label,
   unit,
   className,
+  title,
 }: {
   value: number
   onCommit: (v: number) => void
+  title?: string
   min?: number
   max?: number
   step?: number
@@ -110,7 +117,7 @@ export function NumberField({
     if (v !== value) onCommit(v)
   }
   return (
-    <label className={`field ${className ?? ''}`}>
+    <label className={`field ${className ?? ''}`} title={title}>
       <span>{label}</span>
       <input
         type="number"
@@ -195,6 +202,63 @@ export function useFrameQueue<T>(fn: (v: T) => void) {
   }
 }
 
+/**
+ * Labelled slider with its value; sends are coalesced per frame while dragging.
+ * `scale` maps a value to a 0..1 travel and back (e.g. logarithmic for Hz and ms).
+ */
+export function RangeField({
+  label,
+  title,
+  value,
+  min,
+  max,
+  step,
+  scale,
+  format,
+  onChange,
+  disabled,
+}: {
+  label: string
+  title?: string
+  value: number
+  min: number
+  max: number
+  step?: number
+  scale?: { toPos: (v: number) => number; fromPos: (p: number) => number }
+  format: (v: number) => string
+  onChange: (v: number) => void
+  disabled?: boolean
+}) {
+  const [drag, setDrag] = useState<number | null>(null)
+  const queue = useFrameQueue(onChange)
+  const shown = drag ?? value
+  const end = () => setDrag(null)
+  return (
+    <label className={`range-row ${disabled ? 'disabled' : ''}`} title={title}>
+      <span className="range-label">{label}</span>
+      <input
+        type="range"
+        min={scale ? 0 : min}
+        max={scale ? 1000 : max}
+        step={scale ? 1 : step}
+        value={scale ? Math.round(scale.toPos(shown) * 1000) : shown}
+        disabled={disabled}
+        aria-valuetext={format(shown)}
+        onChange={(e) => {
+          const raw = Number(e.target.value)
+          const v = scale ? scale.fromPos(raw / 1000) : raw
+          setDrag(v)
+          queue(v)
+        }}
+        onPointerUp={end}
+        onKeyUp={end}
+        onBlur={end}
+      />
+      <output className="range-value">{format(shown)}</output>
+    </label>
+  )
+}
+
 /* ---------- Audio ---------- */
 
 /** Peak meter; vertical for strips, horizontal for rows. One value per channel. */
@@ -252,7 +316,8 @@ export function Tabs<T extends string>({
   onChange,
   label,
 }: {
-  tabs: { id: T; label: string; badge?: ReactNode }[]
+  /** With an icon the label is only read out and shown as tooltip. */
+  tabs: { id: T; label: string; badge?: ReactNode; icon?: IconName }[]
   value: T
   onChange: (v: T) => void
   label: string
@@ -278,7 +343,8 @@ export function Tabs<T extends string>({
           aria-controls={`tabpanel-${tab.id}`}
           aria-selected={tab.id === value}
           tabIndex={tab.id === value ? 0 : -1}
-          className="tab"
+          className={`tab ${tab.icon ? 'tab-icon' : ''}`}
+          title={tab.icon ? tab.label : undefined}
           onClick={() => onChange(tab.id)}
           onKeyDown={(e) => {
             if (e.key === 'ArrowRight') move(1)
@@ -287,7 +353,14 @@ export function Tabs<T extends string>({
             e.preventDefault()
           }}
         >
-          {tab.label}
+          {tab.icon ? (
+            <>
+              <Icon name={tab.icon} size={16} />
+              <span className="sr-only">{tab.label}</span>
+            </>
+          ) : (
+            tab.label
+          )}
           {tab.badge}
         </button>
       ))}

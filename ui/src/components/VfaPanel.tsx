@@ -1,11 +1,10 @@
-import { useState } from 'react'
 import { send, useLevels } from '../client'
 import { tallyOf } from '../helpers'
 import { getLang, t } from '../i18n'
 import type { State, Vfa, VfaRule, VfaSettings } from '../types'
 import { VFA_PRESETS, VFA_RANGES, clampToRange, formatVfaValue, nextFreeSource, parseSource, presetMatches, speechFill, type VfaRange } from '../vfa'
 import { micLabel } from './MicsPanel'
-import { Icon, Panel, Segmented, Switch, useFrameQueue } from './ui'
+import { Icon, Panel, RangeField, Segmented, Switch } from './ui'
 
 /** "Mic 2 · Anna" or "Input 3 · Cam" for a VFA source key. */
 export function sourceLabel(key: string | null, state: State): string {
@@ -113,30 +112,17 @@ function RuleRow({ rule, index, state, db }: { rule: VfaRule; index: number; sta
 }
 
 function RangeRow({ r, value }: { r: VfaRange; value: number }) {
-  const [drag, setDrag] = useState<number | null>(null)
-  const queue = useFrameQueue((v: number) => send({ cmd: 'setVfa', [r.key]: v } as { cmd: 'setVfa' } & Partial<VfaSettings>))
-  const shown = drag ?? value
   return (
-    <label className="range-row" title={t(r.hint)}>
-      <span className="range-label">{t(r.label)}</span>
-      <input
-        type="range"
-        min={r.min}
-        max={r.max}
-        step={r.step}
-        value={shown}
-        aria-valuetext={formatVfaValue(r, shown, getLang(), t('Off'))}
-        onChange={(e) => {
-          const v = clampToRange(r, Number(e.target.value))
-          setDrag(v)
-          queue(v)
-        }}
-        onPointerUp={() => setDrag(null)}
-        onKeyUp={() => setDrag(null)}
-        onBlur={() => setDrag(null)}
-      />
-      <output className="range-value">{formatVfaValue(r, shown, getLang(), t('Off'))}</output>
-    </label>
+    <RangeField
+      label={t(r.label)}
+      title={t(r.hint)}
+      value={value}
+      min={r.min}
+      max={r.max}
+      step={r.step}
+      format={(v) => formatVfaValue(r, v, getLang(), t('Off'))}
+      onChange={(v) => send({ cmd: 'setVfa', [r.key]: clampToRange(r, v) } as { cmd: 'setVfa' } & Partial<VfaSettings>)}
+    />
   )
 }
 
