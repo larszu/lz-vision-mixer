@@ -35,19 +35,33 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - name: GStreamer installers (cache)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: gst-msi
+          key: gstreamer-msvc-x86_64-1.26.9
       - name: GStreamer (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        # Official MSIs straight from gstreamer.freedesktop.org; the Chocolatey
-        # package failed on a truncated download (v0.3.0 run).
+        # Official MSIs from gstreamer.freedesktop.org. The server drops
+        # connections mid-file (HTTP/2 protocol errors, truncated files), so
+        # download over HTTP/1.1 and resume until the size matches; the cache
+        # above keeps them for later runs.
         run: |
           $v = "1.26.9"
           $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc"
+          New-Item -ItemType Directory -Force gst-msi | Out-Null
           foreach ($m in @("gstreamer-1.0-msvc-x86_64-$v.msi", "gstreamer-1.0-devel-msvc-x86_64-$v.msi")) {
-            # The server drops connections now and then; retry until the file is whole.
-            curl.exe -fL --retry 8 --retry-all-errors --retry-delay 5 -o $m "$base/$m"
-            if ($LASTEXITCODE -ne 0) { throw "download of $m failed" }
-            Start-Process msiexec -ArgumentList "/i", $m, "/qn", "ADDLOCAL=ALL" -Wait
+            $f = "gst-msi/$m"
+            $total = [int64]((curl.exe -sIL --http1.1 "$base/$m" | Select-String -Pattern '^content-length' | Select-Object -Last 1).ToString().Split(':')[1].Trim())
+            for ($i = 0; $i -lt 60; $i++) {
+              $have = if (Test-Path $f) { (Get-Item $f).Length } else { 0 }
+              if ($have -eq $total) { break }
+              curl.exe -sfL --http1.1 -C - -o $f "$base/$m"
+            }
+            if ((Get-Item $f).Length -ne $total) { throw "download of $m incomplete" }
+            Start-Process msiexec -ArgumentList "/i", $f, "/qn", "ADDLOCAL=ALL" -Wait
           }
           choco install -y pkgconfiglite --no-progress
           $root = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
