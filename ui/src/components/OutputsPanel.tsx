@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { send } from '../client'
+import { pickPath, send } from '../client'
 import { OUTPUT_PRESETS, audioOutputSpec, needMet, specNeed } from '../helpers'
 import { needLabel, t } from '../i18n'
 import type { Output, State } from '../types'
@@ -13,6 +13,15 @@ function outputStatus(o: Output) {
 
 export function OutputsPanel({ state }: { state: State }) {
   const [spec, setSpec] = useState('')
+  const [picking, setPicking] = useState(false)
+  const recording = spec.trim().startsWith('record:')
+  const browse = async () => {
+    setPicking(true)
+    const r = await pickPath('save')
+    setPicking(false)
+    if ('path' in r) setSpec(`record:${r.path}`)
+    input.current?.focus()
+  }
   const input = useRef<HTMLInputElement>(null)
   const caps = state.capabilities
   const need = specNeed(spec)
@@ -63,6 +72,12 @@ export function OutputsPanel({ state }: { state: State }) {
             autoComplete="off"
           />
         </label>
+        {recording && (
+          <button type="button" className="btn" disabled={picking} onClick={browse} title={t('Choose where to record. Opens on the computer running the engine.')}>
+            <Icon name="folder" size={16} />
+            {picking ? t('Waiting for the dialog…') : t('Browse…')}
+          </button>
+        )}
         <button type="submit" className="btn btn-primary" disabled={!spec.trim()}>
           {t('Add output')}
         </button>

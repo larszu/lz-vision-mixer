@@ -37,6 +37,11 @@ pub fn list() -> Vec<Found> {
     list_class("Audio/Source")
 }
 
+/// Cameras and capture cards (USB, HDMI/SDI capture, built-in cameras).
+pub fn list_video() -> Vec<Found> {
+    list_class("Video/Source")
+}
+
 /// Audio outputs (interfaces, headphones, virtual devices like BlackHole).
 pub fn list_outputs() -> Vec<Found> {
     list_class("Audio/Sink")
@@ -103,6 +108,42 @@ pub fn mic_pipeline(dev: &Found, channel: u32, mic: usize, strip: &StripParams) 
     Ok(pipeline)
 }
 
+/// Input slot from a capture device, with sound from an audio device or silence.
+pub fn capture_pipeline(
+    video: &Found,
+    audio: Option<&Found>,
+    f: &crate::format::Format,
+    slot: usize,
+) -> Result<gst::Pipeline> {
+    let pipeline = gst::Pipeline::new();
+    let src = video.device.create_element(None).context("device has no source element")?;
+    let vtail = gst::parse::bin_from_description(&crate::specs::video_tail(f, slot), true)?;
+    pipeline.add_many([&src, vtail.upcast_ref()])?;
+    src.link(&vtail)?;
+    match audio {
+        Some(a) => {
+            let asrc = a.device.create_element(None).context("audio device has no source element")?;
+            let atail = gst::parse::bin_from_description(&crate::specs::audio_tail(slot), true)?;
+            pipeline.add_many([&asrc, atail.upcast_ref()])?;
+            asrc.link(&atail)?;
+        }
+        None => {
+            let silence = gst::parse::bin_from_description(&crate::specs::silence(slot), false)?;
+            pipeline.add(&silence)?;
+        }
+    }
+    Ok(pipeline)
+}
+
+/// Splits "device:<video id>#audio=<audio id>".
+pub fn parse_capture_spec(spec: &str) -> Option<(&str, Option<&str>)> {
+    let rest = spec.strip_prefix("device:")?;
+    Some(match rest.split_once("#audio=") {
+        Some((v, a)) => (v, Some(a)),
+        None => (rest, None),
+    })
+}
+
 /// Programme audio (stereo) to an audio output device.
 pub fn output_pipeline(dev: &Found) -> Result<gst::Pipeline> {
     let pipeline = gst::Pipeline::new();
@@ -119,6 +160,13 @@ pub fn output_pipeline(dev: &Found) -> Result<gst::Pipeline> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_spec_with_and_without_audio() {
+        assert_eq!(parse_capture_spec("device:FaceTime HD-Kamera"), Some(("FaceTime HD-Kamera", None)));
+        assert_eq!(parse_capture_spec("device:Cam Link 4K#audio=Cam Link 4K"), Some(("Cam Link 4K", Some("Cam Link 4K"))));
+        assert_eq!(parse_capture_spec("test:bars"), None);
+    }
 
     #[test]
     fn matrix_picks_one_channel_for_both_sides() {

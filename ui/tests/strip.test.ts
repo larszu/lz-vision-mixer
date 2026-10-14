@@ -102,7 +102,11 @@ describe('delay', () => {
     expect(clampDelay(Number.NaN)).toBe(0)
   })
   it('older engines get no delay and a neutral strip', () => {
-    const s = normalizeState({ version: '0.1.0', slots: [{ slot: 1, audio: { volume: 1, muted: false, afv: true } }] } as never)
+    const s = normalizeState({
+      version: '0.1.0',
+      slots: [{ slot: 1, audio: { volume: 1, muted: false, afv: true } }],
+      mics: [{ mic: 1, name: '', device: null, channel: 0, status: 'empty', error: null, volume: 1, muted: false, inProgram: true }],
+    } as never)
     expect(s.slots[0].audio.delayMs).toBe(0)
     expect(s.mics[0].delayMs).toBe(0)
     expect(s.mics[0].strip).toEqual(STRIP_NEUTRAL)

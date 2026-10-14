@@ -130,6 +130,7 @@ export function VfaPanel({ state }: { state: State }) {
   const vfa = state.vfa
   const levels = useLevels()
   const micsInUse = state.mics.filter((m) => m.device).map((m) => m.mic)
+  const canAdd = state.slots.length > 0
   const speakingRule = vfa.rules.find((r) => r.source === vfa.speaking)
   const now =
     vfa.speaking === 'wide'
@@ -161,12 +162,18 @@ export function VfaPanel({ state }: { state: State }) {
         <button
           type="button"
           className="btn btn-sm"
-          onClick={() =>
-            send({
-              cmd: 'setVfa',
-              rules: [...vfa.rules, { source: nextFreeSource(vfa.rules.map((r) => r.source), micsInUse), camera: state.preview ?? 1 }],
-            })
-          }
+          disabled={!canAdd}
+          title={canAdd ? undefined : t('Add an input first')}
+          onClick={() => {
+            const source = nextFreeSource(
+              vfa.rules.map((r) => r.source),
+              micsInUse,
+              state.mics.map((m) => m.mic),
+              state.slots.map((s) => s.slot),
+            )
+            const camera = state.preview ?? state.slots[0]?.slot
+            if (source && camera != null) send({ cmd: 'setVfa', rules: [...vfa.rules, { source, camera }] })
+          }}
         >
           <Icon name="plus" size={16} />
           {t('Add rule')}

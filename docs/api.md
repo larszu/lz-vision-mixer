@@ -7,9 +7,11 @@ The engine listens on `http://127.0.0.1:4195` (change with `--listen`). The web 
 - `POST /api/cmd` — body: one `Command`. Answers `200 {"ok":true}` or `400 {"error":string}`.
 - `GET /api/state` — `State` as JSON.
 - Shortcuts for Bitfocus Companion (Generic HTTP, GET): `/api/cut`, `/api/auto`, `/api/ftb`, `/api/preview/<slot>`, `/api/program/<slot>`, `/api/overlay/<index>/toggle`, `/api/tbar/<0..1>`.
-- `GET /mjpeg/multiview` — multiview as MJPEG (multipart/x-mixed-replace), 1280×720, ~15 fps. Layout below.
+- `GET /mjpeg/multiview` — multiview as MJPEG (multipart/x-mixed-replace), 1280×720, ~15 fps. Layout in `state.multiview`.
+- `GET /api/perf` — `Perf` (below); also pushed over the WebSocket as `{"type":"perf","perf":Perf}` once a second.
+- `POST /api/pick` — body `{ kind: 'video'|'image'|'folder'|'sdp'|'save' }`: opens the system's file dialog (Finder, Explorer, GTK via zenity) **on the engine's machine** — a browser on another device does not see it — and answers `{ path }`, `{ cancelled: true }`, or HTTP 400 `{ error }` (e.g. no dialog tool installed). The web UI uses it for file, image, folder and SDP sources and for recording paths.
 
-Slots and overlays are numbered from 1 in the API and in the UI.
+Inputs and mics have stable numbers from 1; there is no fixed count. `addInput`/`addMic` take the next free number, removing one leaves a gap (numbers are never reused while running). Overlays are numbered 1 and 2.
 
 ## Types (TypeScript notation)
 
@@ -62,7 +64,32 @@ interface State {
   overlays: Overlay[]
   outputs: Output[]
   master: { volume: number; muted: boolean }
-  capabilities: { decklink: boolean; ndi: boolean; srt: boolean; st2110: boolean; encoders: string[] }
+  capabilities: { decklink: boolean; ndi: boolean; screen: boolean; whep: boolean; srt: boolean; st2110: boolean; encoders: string[] }
+  videoDevices: { id: string; name: string }[]   // cameras and capture cards, for `device:`
+  multiview: {                // pixel layout of /mjpeg/multiview, for names and tally on top
+    width: number; height: number
+    preview: Area; program: Area
+    tiles: (Area & { slot: number })[]   // one per input, in list order; more inputs → more columns
+  }
+}
+interface Area { x: number; y: number; w: number; h: number }
+
+interface Perf {
+  cpu: number                 // engine, % of the whole machine
+  systemCpu: number           // all programs, %
+  cores: number
+  memoryUsedMb: number; memoryTotalMb: number; processMemoryMb: number
+  outputFps: number           // programme frames actually produced per second
+  nominalFps: number
+  overloaded: boolean         // output below 95 % of nominal for 2 s
+  runningInputs: number; runningMics: number
+  forecast: {
+    moreInputs: number | null // how many more running inputs fit (machine below 80 % CPU)
+    moreMics: number | null
+    perInput: number          // cost of one, % of ONE core
+    perMic: number
+    basis: 'measured' | 'estimate'   // measured: learned on this machine (also from earlier runs)
+  }
 }
 
 interface Levels {          // dBFS peak per channel, -90 = silence
@@ -71,6 +98,11 @@ interface Levels {          // dBFS peak per channel, -90 = silence
 }
 
 type Command =
+  | { cmd: 'addInput'; spec?: string; name?: string }   // new input with the next number
+  | { cmd: 'removeInput'; slot: number }                // not while it is in a running transition; clears programme/preview,
+                                                        // overlays using it (taken off air), the wide shot and VFA rules with it
+  | { cmd: 'addMic'; name?: string }
+  | { cmd: 'removeMic'; mic: number }                   // also drops VFA rules that use the mic
   | { cmd: 'setInput'; slot: number; spec: string; name?: string }
   | { cmd: 'clearInput'; slot: number }
   | { cmd: 'renameInput'; slot: number; name: string }
@@ -91,13 +123,13 @@ type Command =
 
 ## Microphones (audio devices)
 
-Besides the audio embedded in the eight inputs, the mixer takes up to eight microphone channels from audio interfaces (CoreAudio, WASAPI, PulseAudio/PipeWire). Each mic is one channel of one device; the same device can feed several mics. Mics are mixed into the programme like inputs (fader, mute) unless `inProgram` is off — then they only steer video follows audio.
+Besides the audio embedded in the inputs, the mixer takes any number of microphone channels from audio interfaces (CoreAudio, WASAPI, PulseAudio/PipeWire). Each mic is one channel of one device; the same device can feed several mics. Mics are mixed into the programme like inputs (fader, mute) unless `inProgram` is off — then they only steer video follows audio.
 
 ```ts
 interface AudioDevice { id: string; name: string; channels: number }
 
 interface Mic {
-  mic: number               // 1..8
+  mic: number               // stable number from 1, no fixed count
   name: string
   device: string | null     // AudioDevice.id; null = unused
   channel: number           // 0-based channel of the device
@@ -242,9 +274,14 @@ Feedback goes to every target in `state.osc.targets` (`{ cmd: 'setOscTargets'; t
 | Spec | Source |
 |---|---|
 | `test:smpte`, `test:bars`, `test:ball`, `test:black`, `test:snow` | Test pattern (with 1 kHz tone for `smpte`/`bars`) |
+| `device:<videoDevices.id>` · `device:<id>#audio=<audioDevices.id>` (ids may contain `:`; `#audio=` separates them) | Camera or capture card (USB, HDMI/SDI capture), optionally with sound from an audio device |
+| `screen:<n>` | Screen capture of display n (0-based) |
+| `sdp:/path/stream.sdp` | RTP stream described by an SDP file (also AES67 audio) |
+| `whep:<endpoint URL>` | WebRTC via WHEP (e.g. from OBS, vMix, a WebRTC server) |
+| `folder:/path` | Newest still image in a folder; switches when a newer one arrives |
 | `decklink:<n>` | DeckLink input `n` (0-based device number), mode auto-detected |
 | `ndi:<source name>` | NDI source (needs the NDI runtime and the GStreamer NDI plugin) |
-| `srt://host:port?mode=listener` · `rtmp://…` · `rtsp://…` · `http(s)://…` | Network stream |
+| `srt://host:port?mode=listener` (or `caller`) · `rtmp://…` · `rtsp://…` · `rtsps://…` · `udp://…` (MPEG-TS) · `http(s)://…` (also HLS `.m3u8` and DASH `.mpd`) | Network stream; retried every 3 s when it drops |
 | `file:/path/to/clip.mp4` | Video file, loops |
 | `image:/path/to/still.png` | Still image |
 | `st2110:<sdp file>` | Reserved; needs the Intel Media Transport Library plugin (not yet wired) |
@@ -263,4 +300,4 @@ Feedback goes to every target in `state.osc.targets` (`{ cmd: 'setOscTargets'; t
 
 ## Multiview layout (1280×720)
 
-Top half: preview (left, 640×360) and programme (right, 640×360). Bottom half: slots 1–8 in two rows of four (320×180 each). The UI draws names and tally borders on top; the picture itself carries none.
+Top half: preview (left) and programme (right). Bottom half: every input as a tile; four columns up to eight inputs, more columns as more inputs come. Exact rectangles are in `state.multiview`. The UI draws names and tally borders on top; the picture itself carries none.

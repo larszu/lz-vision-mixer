@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { send, useConn } from '../client'
-import { MV_PREVIEW, MV_PROGRAM, mvSlotBox, tallyOf, type Box } from '../helpers'
+import { areaBox, tallyOf, type Box } from '../helpers'
 import { t } from '../i18n'
 import type { State } from '../types'
 
@@ -22,6 +22,9 @@ export function Multiview({ state }: { state: State | null }) {
 
   const name = (slot: number | null) => (slot == null ? '' : (state?.slots.find((s) => s.slot === slot)?.name ?? `${slot}`))
   const mixing = !!state && (state.inTransition || state.tbar > 0)
+  const mv = state?.multiview
+  // Small tiles (many inputs) get a smaller label so names stay readable.
+  const dense = !!mv && mv.tiles.length > 0 && mv.tiles[0].w / mv.width < 0.2
 
   return (
     <div className={`multiview ${conn.status === 'open' ? '' : 'stale'}`}>
@@ -35,37 +38,39 @@ export function Multiview({ state }: { state: State | null }) {
         />
       )}
       {(broken || conn.status !== 'open') && <div className="mv-nosignal">{t('No multiview signal')}</div>}
-      <div className="mv-overlay">
-        <div className={`mv-box mv-big ${mixing ? 'tally-program' : 'tally-preview'}`} style={pct(MV_PREVIEW)}>
-          <span className="mv-label">
-            {t('Preview')} {state?.preview != null && <b>{name(state.preview)}</b>}
-          </span>
+      {state && mv && (
+        <div className={`mv-overlay ${dense ? 'mv-dense' : ''}`}>
+          <div className={`mv-box mv-big ${mixing ? 'tally-program' : 'tally-preview'}`} style={pct(areaBox(mv.preview, mv))}>
+            <span className="mv-label">
+              {t('Preview')} {state.preview != null && <b>{name(state.preview)}</b>}
+            </span>
+          </div>
+          <div className="mv-box mv-big tally-program" style={pct(areaBox(mv.program, mv))}>
+            <span className="mv-label">
+              {t('Program')} {state.program != null && <b>{name(state.program)}</b>}
+              {state.ftb && <b className="mv-ftb">{t('FTB')}</b>}
+            </span>
+          </div>
+          {mv.tiles.map((tile) => {
+            const tally = tallyOf(tile.slot, state)
+            return (
+              <button
+                key={tile.slot}
+                type="button"
+                className={`mv-box mv-tile ${tally ? `tally-${tally}` : ''}`}
+                style={pct(areaBox(tile, mv))}
+                onClick={() => send({ cmd: 'preview', slot: tile.slot })}
+                onDoubleClick={() => send({ cmd: 'program', slot: tile.slot })}
+                title={`${tile.slot} ${name(tile.slot)}: ${t('Click for preview, double-click to cut to program')}`}
+              >
+                <span className="mv-label">
+                  <span className="mv-num">{tile.slot}</span> {name(tile.slot)}
+                </span>
+              </button>
+            )
+          })}
         </div>
-        <div className="mv-box mv-big tally-program" style={pct(MV_PROGRAM)}>
-          <span className="mv-label">
-            {t('Program')} {state?.program != null && <b>{name(state.program)}</b>}
-            {state?.ftb && <b className="mv-ftb">{t('FTB')}</b>}
-          </span>
-        </div>
-        {Array.from({ length: 8 }, (_, i) => i + 1).map((slot) => {
-          const tally = state ? tallyOf(slot, state) : null
-          return (
-            <button
-              key={slot}
-              type="button"
-              className={`mv-box mv-tile ${tally ? `tally-${tally}` : ''}`}
-              style={pct(mvSlotBox(slot))}
-              onClick={() => send({ cmd: 'preview', slot })}
-              onDoubleClick={() => send({ cmd: 'program', slot })}
-              title={t('Click for preview, double-click to cut to program')}
-            >
-              <span className="mv-label">
-                <span className="mv-num">{slot}</span> {name(slot)}
-              </span>
-            </button>
-          )
-        })}
-      </div>
+      )}
     </div>
   )
 }

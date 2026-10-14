@@ -2,7 +2,7 @@
 import { useSyncExternalStore } from 'react'
 import { backoffMs, normalizeLevels, normalizeState, wsUrl } from './helpers'
 import { t } from './i18n'
-import type { Command, Levels, ServerMessage, State } from './types'
+import type { Command, Levels, Perf, PickKind, ServerMessage, State } from './types'
 
 export type ConnStatus = 'connecting' | 'open' | 'closed'
 
@@ -33,6 +33,7 @@ class Store<T> {
 
 const stateStore = new Store<State | null>(null)
 const levelsStore = new Store<Levels | null>(null)
+const perfStore = new Store<Perf | null>(null)
 const connStore = new Store<Conn>({ status: 'connecting', retryAt: null })
 const errorStore = new Store<ServerError | null>(null)
 
@@ -62,12 +63,14 @@ function connect() {
       stateStore.set(normalizeState(msg.state))
     }
     else if (msg.type === 'levels') levelsStore.set(normalizeLevels(msg.levels))
+    else if (msg.type === 'perf') perfStore.set(msg.perf)
     else if (msg.type === 'error') reportError(msg.message)
   }
   sock.onclose = () => {
     if (ws !== sock) return
     ws = null
     levelsStore.set(null)
+    perfStore.set(null)
     const delay = backoffMs(attempt++)
     connStore.set({ status: 'closed', retryAt: Date.now() + delay })
     setTimeout(connect, delay)
@@ -91,6 +94,28 @@ export function send(c: Command) {
     .catch(() => reportError(t('Not connected to the engine')))
 }
 
+export type PickResult = { path: string } | { cancelled: true } | { failed: true }
+
+/**
+ * Opens the file dialog on the engine's machine (POST /api/pick). Errors go
+ * to the toast; the caller only needs to know whether a path came back.
+ */
+export async function pickPath(kind: PickKind): Promise<PickResult> {
+  try {
+    const r = await fetch('api/pick', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind }) })
+    const body = (await r.json().catch(() => null)) as { path?: string; cancelled?: boolean; error?: string } | null
+    if (!r.ok) {
+      reportError(body?.error ?? `HTTP ${r.status}`)
+      return { failed: true }
+    }
+    if (body?.path) return { path: body.path }
+    return { cancelled: true }
+  } catch {
+    reportError(t('Not connected to the engine'))
+    return { failed: true }
+  }
+}
+
 export function dismissError() {
   errorStore.set(null)
 }
@@ -100,5 +125,6 @@ export const getState = () => stateStore.get()
 
 export const useMixerState = () => useSyncExternalStore(stateStore.subscribe, stateStore.get)
 export const useLevels = () => useSyncExternalStore(levelsStore.subscribe, levelsStore.get)
+export const usePerf = () => useSyncExternalStore(perfStore.subscribe, perfStore.get)
 export const useConn = () => useSyncExternalStore(connStore.subscribe, connStore.get)
 export const useServerError = () => useSyncExternalStore(errorStore.subscribe, errorStore.get)

@@ -48,10 +48,67 @@ export interface Output {
 export interface Capabilities {
   decklink: boolean
   ndi: boolean
+  screen?: boolean
+  whep?: boolean
   srt: boolean
   st2110: boolean
   encoders: string[]
 }
+
+export interface VideoDevice {
+  id: string
+  name: string
+}
+
+/** Pixel rectangle in the multiview picture. */
+export interface Area {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** Pixel layout of /mjpeg/multiview, for names and tally drawn on top. */
+export interface MultiviewLayout {
+  width: number
+  height: number
+  preview: Area
+  program: Area
+  /** One per input, in list order. */
+  tiles: (Area & { slot: number })[]
+}
+
+export interface Forecast {
+  /** How many more running inputs fit (machine below 80 % CPU); null = not known. */
+  moreInputs: number | null
+  moreMics: number | null
+  /** Cost of one, % of ONE core. */
+  perInput: number
+  perMic: number
+  /** measured: learned on this machine (also from earlier runs). */
+  basis: 'measured' | 'estimate'
+}
+
+export interface Perf {
+  /** Engine, % of the whole machine. */
+  cpu: number
+  /** All programs, %. */
+  systemCpu: number
+  cores: number
+  memoryUsedMb: number
+  memoryTotalMb: number
+  processMemoryMb: number
+  /** Programme frames actually produced per second. */
+  outputFps: number
+  nominalFps: number
+  /** Output below 95 % of nominal for 2 s. */
+  overloaded: boolean
+  runningInputs: number
+  runningMics: number
+  forecast: Forecast
+}
+
+export type PickKind = 'video' | 'image' | 'folder' | 'sdp' | 'save'
 
 export interface AudioDevice {
   id: string
@@ -179,10 +236,13 @@ export interface State {
   audioDevices: AudioDevice[]
   /** Audio outputs, for the `audio:<id>` output spec. */
   audioOutputs: AudioDevice[]
+  /** Cameras and capture cards, for `device:`. */
+  videoDevices: VideoDevice[]
   mics: Mic[]
   vfa: Vfa
   graphics: Graphics
   osc: Osc
+  multiview: MultiviewLayout
 }
 
 export interface Levels {
@@ -195,6 +255,10 @@ export interface Levels {
 }
 
 export type Command =
+  | { cmd: 'addInput'; spec?: string; name?: string }
+  | { cmd: 'removeInput'; slot: number }
+  | { cmd: 'addMic'; name?: string }
+  | { cmd: 'removeMic'; mic: number }
   | { cmd: 'setInput'; slot: number; spec: string; name?: string }
   | { cmd: 'clearInput'; slot: number }
   | { cmd: 'renameInput'; slot: number; name: string }
@@ -230,6 +294,7 @@ export type Command =
 export type ServerMessage =
   | { type: 'state'; state: State }
   | { type: 'levels'; levels: Levels }
+  | { type: 'perf'; perf: Perf }
   | { type: 'error'; message: string }
 
 export const TRANSITION_KINDS: TransitionKind[] = ['cut', 'mix', 'dip', 'pushLeft', 'pushRight', 'slideLeft', 'slideRight', 'zoom']

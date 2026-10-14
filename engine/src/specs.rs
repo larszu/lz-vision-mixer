@@ -21,20 +21,20 @@ fn q(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn video_tail(f: &Format, slot: usize) -> String {
+pub fn video_tail(f: &Format, slot: usize) -> String {
     format!(
         "videoconvert ! videoscale add-borders=true ! videorate ! {} ! queue max-size-buffers=3 leaky=downstream ! intervideosink channel=in{slot} async=false",
         f.caps(VIDEO_FORMAT)
     )
 }
 
-fn audio_tail(slot: usize) -> String {
+pub fn audio_tail(slot: usize) -> String {
     format!(
         "audioconvert ! audioresample ! {AUDIO_CAPS} ! queue ! interaudiosink channel=ain{slot} async=false"
     )
 }
 
-fn silence(slot: usize) -> String {
+pub fn silence(slot: usize) -> String {
     format!("audiotestsrc is-live=true wave=silence ! {}", audio_tail(slot))
 }
 
@@ -129,7 +129,61 @@ pub fn input(spec: &str, f: &Format, slot: usize, has: impl Fn(&str) -> bool) ->
                 plan(format!("uridecodebin3 uri={} name=d d. ! {v} d. ! {a}", q(&uri)), true, false, name)
             }
         }
-        "srt" | "rtmp" | "rtmps" | "rtsp" | "http" | "https" | "udp" => {
+        "screen" => {
+            // Whole display; window capture has no portable GStreamer source.
+            let n: u32 = if rest.is_empty() { 0 } else { rest.parse().map_err(|_| anyhow::anyhow!("screen:<display number>"))? };
+            let src = if has("avfvideosrc") {
+                format!("avfvideosrc capture-screen=true capture-screen-cursor=true device-index={n}")
+            } else if has("d3d11screencapturesrc") {
+                format!("d3d11screencapturesrc monitor-index={n} show-cursor=true ! d3d11download")
+            } else if has("pipewiresrc") {
+                "pipewiresrc".to_string()
+            } else if has("ximagesrc") {
+                "ximagesrc use-damage=false show-pointer=true".to_string()
+            } else {
+                bail!("no screen capture available on this system");
+            };
+            plan(format!("{src} ! {v} {}", silence(slot)), false, true, format!("Screen {}", n + 1))
+        }
+        "sdp" => {
+            // RTP described by an SDP file (also AES67 / ST 2110-30 audio-only streams).
+            let path = std::path::Path::new(rest);
+            if !path.exists() {
+                bail!("SDP file not found: {rest}");
+            }
+            let uri = gstreamer::glib::filename_to_uri(path, None)?.to_string();
+            let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            plan(format!("uridecodebin3 uri={} name=d d. ! {v} d. ! {a}", q(&uri)), false, true, name)
+        }
+        "whep" => {
+            if !has("whepclientsrc") {
+                bail!("WebRTC (WHEP) is not available (GStreamer webrtc plugins missing)");
+            }
+            if rest.is_empty() {
+                bail!("whep:<endpoint URL>");
+            }
+            plan(
+                format!("whepclientsrc signaller::whep-endpoint={} name=d d. ! {v} d. ! {a}", q(rest)),
+                false,
+                true,
+                "WebRTC".into(),
+            )
+        }
+        "folder" => {
+            // Newest still image in a folder; the mixer reloads when a newer one arrives.
+            let Some(img) = newest_image(std::path::Path::new(rest)) else {
+                bail!("no image in folder {rest}");
+            };
+            let uri = gstreamer::glib::filename_to_uri(&img, None)?.to_string();
+            let name = std::path::Path::new(rest).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            plan(
+                format!("uridecodebin3 uri={} name=d d. ! imagefreeze is-live=true ! {v} {}", q(&uri), silence(slot)),
+                false,
+                false,
+                name,
+            )
+        }
+        "srt" | "rtmp" | "rtmps" | "rtsp" | "rtsps" | "http" | "https" | "udp" => {
             if kind == "srt" && !has("srtsrc") {
                 bail!("SRT support is not available (GStreamer srt plugin missing)");
             }
@@ -145,6 +199,21 @@ pub fn input(spec: &str, f: &Format, slot: usize, has: impl Fn(&str) -> bool) ->
         ),
         _ => bail!("unknown source '{spec}'"),
     }
+}
+
+const IMAGE_EXT: [&str; 7] = ["png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"];
+
+/// Newest image file (by modification time) directly in `dir`.
+pub fn newest_image(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().extension().and_then(|x| x.to_str()).is_some_and(|x| IMAGE_EXT.contains(&x.to_lowercase().as_str()))
+        })
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .max_by_key(|(t, _)| *t)
+        .map(|(_, p)| p)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -353,6 +422,27 @@ mod tests {
         let f = Format::parse("1080p59.94").unwrap();
         let p = output("decklink:1", &f, all).unwrap();
         assert!(p.launch.contains("device-number=1 mode=1080p5994"));
+    }
+
+    #[test]
+    fn newest_image_wins() {
+        let dir = std::env::temp_dir().join(format!("lzvm-folder-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.png"), b"x").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join("b.jpg"), b"x").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+        assert_eq!(newest_image(&dir).unwrap().file_name().unwrap(), "b.jpg");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn screen_and_whep_specs() {
+        let f = Format::parse("1080p50").unwrap();
+        let p = input("screen:1", &f, 2, |e| e == "avfvideosrc").unwrap();
+        assert!(p.launch.contains("capture-screen=true") && p.launch.contains("device-index=1"));
+        let p = input("whep:https://x/whep/1", &f, 2, all).unwrap();
+        assert!(p.launch.contains("whep-endpoint=\"https://x/whep/1\""));
     }
 
     #[test]

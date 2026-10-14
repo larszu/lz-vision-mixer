@@ -1,14 +1,17 @@
 //! The mixer: one long-running main pipeline, input and output pipelines
 //! that come and go, and the state the API shows.
 //!
-//! Main pipeline, per slot n (1..=8): intervideosrc in<n> → tee → five pads:
-//!   programme compositor  sink_<n>        (the on-air layer)
-//!   programme compositor  sink_<20+n>     (overlay 1, if this slot is chosen)
-//!   programme compositor  sink_<30+n>     (overlay 2)
-//!   multiview compositor  sink_<n>        (tile)
-//!   multiview compositor  sink_<10+n>     (big preview, if this slot is on preview)
-//! Programme sink_0 is black on top for fade to black; multiview sink_0 is the
-//! programme. Switching is only ever a change of pad properties — nothing is
+//! Inputs and mics are added and removed while running; each is a bin of its
+//! own in the main pipeline. Per input n: intervideosrc in<n> → tee → five pads:
+//!   programme compositor  sink_<10n>      (the on-air layer)
+//!   programme compositor  sink_<10n+1>    (overlay 1, if this slot is chosen)
+//!   programme compositor  sink_<10n+2>    (overlay 2)
+//!   multiview compositor  sink_<10n>      (tile)
+//!   multiview compositor  sink_<10n+1>    (big preview, if this slot is on preview)
+//! and its audio into the audio mixer at sink_<n>; mic m at sink_<MIC_PAD+m>.
+//! Programme sink_1 is a black live source that keeps the compositor ticking
+//! with no inputs; multiview sink_0 is the programme; fade to black sits in
+//! the graphics stage. Switching is only ever a change of pad properties — nothing is
 //! relinked while on air, and a pad with alpha 0 costs the compositor nothing.
 
 use crate::easing::{ease, Easing};
@@ -41,6 +44,20 @@ const Z_OVERLAY: u32 = 40;
 const Z_FTB: u32 = 90;
 const GFX_FTB: usize = 9;
 const MAX_DELAY_MS: u32 = 500;
+const MIC_PAD: usize = 100_000;
+
+fn p_main(n: usize) -> usize {
+    n * 10
+}
+fn p_overlay(n: usize, index: usize) -> usize {
+    n * 10 + index
+}
+fn p_tile(n: usize) -> usize {
+    n * 10
+}
+fn p_pvw(n: usize) -> usize {
+    n * 10 + 1
+}
 const TICK: Duration = Duration::from_millis(4);
 const RETRY: Duration = Duration::from_secs(3);
 
@@ -85,18 +102,70 @@ struct Core {
     mics: Vec<MicRt>,
     devices: Vec<devices::Found>,
     out_devices: Vec<devices::Found>,
+    video_devices: Vec<devices::Found>,
     vfa: Vfa,
     gfx: Vec<GraphicsLayer>,
     library: Vec<GraphicInfo>,
     renderer: Option<(u64, mpsc::UnboundedSender<String>)>,
     renderer_epoch: u64,
     osc_targets: Vec<String>,
+    /// Highest input / mic number ever used in this run: numbers are not reused.
+    last_slot: usize,
+    last_mic: usize,
 }
 
 struct MicRt {
     info: Mic,
     runner: Option<Runner>,
     epoch: u64,
+}
+
+impl Core {
+    /// Index of input `slot` in the list (numbers stay stable when others go).
+    fn si(&self, slot: usize) -> Result<usize> {
+        self.slots.iter().position(|s| s.info.slot == slot).ok_or_else(|| anyhow!("no input {slot}"))
+    }
+    fn mi(&self, mic: usize) -> Result<usize> {
+        self.mics.iter().position(|m| m.info.mic == mic).ok_or_else(|| anyhow!("no mic {mic}"))
+    }
+    fn slot_numbers(&self) -> Vec<usize> {
+        self.slots.iter().map(|s| s.info.slot).collect()
+    }
+}
+
+fn new_slot(n: usize) -> SlotRt {
+    SlotRt {
+        info: Slot {
+            slot: n,
+            name: format!("Input {n}"),
+            spec: None,
+            status: SlotStatus::Empty,
+            error: None,
+            audio: SlotAudio::default(),
+        },
+        runner: None,
+        epoch: 0,
+    }
+}
+
+fn new_mic(m: usize) -> MicRt {
+    MicRt {
+        info: Mic {
+            mic: m,
+            name: format!("Mic {m}"),
+            device: None,
+            channel: 0,
+            status: SlotStatus::Empty,
+            error: None,
+            volume: 1.0,
+            muted: false,
+            in_program: true,
+            delay_ms: 0,
+            strip: Default::default(),
+        },
+        runner: None,
+        epoch: 0,
+    }
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -114,6 +183,9 @@ struct Saved {
     vfa: Option<crate::vfa::VfaConfig>,
     #[serde(default)]
     osc_targets: Vec<String>,
+    /// Learned cost per input and per mic (percent of one core).
+    #[serde(default)]
+    costs: Option<(f64, f64)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -136,11 +208,17 @@ pub struct Mixer {
     gfx_runners: Mutex<Vec<Option<Runner>>>,
     pub frame_ports: Vec<u16>,
     pub osc_listen: Mutex<Option<String>>,
+    /// Main-pipeline branches of inputs and mics, by number.
+    slot_bins: Mutex<BTreeMap<usize, gst::Bin>>,
+    mic_bins: Mutex<BTreeMap<usize, gst::Bin>>,
     caps: Capabilities,
     config: Option<PathBuf>,
     pub changed: watch::Sender<u64>,
     pub levels: watch::Sender<Levels>,
     pub jpeg: watch::Sender<Bytes>,
+    pub perf: watch::Sender<crate::perf::Perf>,
+    frames: Arc<std::sync::atomic::AtomicU64>,
+    model: Mutex<crate::perf::Model>,
     me: Weak<Mixer>,
 }
 
@@ -177,6 +255,7 @@ fn main_launch(f: &Format) -> String {
          pgmt. ! queue ! intervideosink channel=pgm sync=false \
          pgmt. ! {leaky} ! {mv_rate} ! mv.sink_0 \
          videotestsrc is-live=true pattern=black ! {caps} ! queue ! gfx.sink_{GFX_FTB} \
+         videotestsrc is-live=true pattern=black ! {caps} ! queue ! pgm.sink_1 \
          compositor name=mv background=black ! video/x-raw,format={VIDEO_FORMAT},width={MV_W},height={MV_H},framerate={MV_FPS}/1 ! queue ! tee name=mvt \
          mvt. ! queue ! intervideosink channel=mv sync=false \
          mvt. ! queue leaky=downstream max-size-buffers=1 ! videorate ! video/x-raw,framerate=15/1 ! jpegenc quality=70 ! appsink name=mvjpeg max-buffers=1 drop=true sync=false \
@@ -191,33 +270,49 @@ fn main_launch(f: &Format) -> String {
             u64::MAX
         ));
     }
-    for n in 1..=SLOTS {
-        s.push_str(&format!(
-            "intervideosrc channel=in{n} ! {caps} ! tee name=t{n} \
-             t{n}. ! {leaky} ! pgm.sink_{n} \
-             t{n}. ! {leaky} ! pgm.sink_{o1} \
-             t{n}. ! {leaky} ! pgm.sink_{o2} \
-             t{n}. ! {leaky} ! {mv_rate} ! mv.sink_{n} \
-             t{n}. ! {leaky} ! {mv_rate} ! mv.sink_{pv} \
-             interaudiosrc channel=ain{n} {INTER_AUDIO} ! {AUDIO_CAPS} ! level name=pre{n} {lvl} ! volume name=vol{n} ! level name=lvl{n} {lvl} ! queue ! amix.sink_{n} ",
-            o1 = 20 + n,
-            o2 = 30 + n,
-            pv = 10 + n,
-        ));
-    }
-    for m in 1..=MICS {
-        s.push_str(&format!(
-            "interaudiosrc channel=mic{m} {INTER_AUDIO} ! {AUDIO_CAPS} ! level name=micpre{m} {lvl} ! volume name=micvol{m} volume=0 ! level name=miclvl{m} {lvl} ! queue ! amix.sink_{a} ",
-            a = 20 + m
-        ));
-    }
     s
 }
 
-/// Multiview tile of a slot: two rows of four under preview and programme.
-pub fn mv_tile(n: usize) -> (i32, i32, i32, i32) {
-    let i = (n - 1) as i32;
-    ((i % 4) * 320, 360 + (i / 4) * 180, 320, 180)
+/// Elements of one input inside the main pipeline. The queues at the ends
+/// get ghost pads (pgm, ov1, ov2, tile, pvw, audio) linked to the mixers.
+fn slot_branch(f: &Format, n: usize) -> String {
+    let caps = f.caps(VIDEO_FORMAT);
+    let mv_rate = format!("videorate ! video/x-raw,framerate={MV_FPS}/1");
+    let leaky = "queue leaky=downstream max-size-buffers=3";
+    let lvl = "interval=100000000 post-messages=true";
+    format!(
+        "intervideosrc channel=in{n} ! {caps} ! tee name=t{n} \
+         t{n}. ! {leaky} name=q_pgm_{n} \
+         t{n}. ! {leaky} name=q_ov1_{n} \
+         t{n}. ! {leaky} name=q_ov2_{n} \
+         t{n}. ! {leaky} ! {mv_rate} ! queue name=q_tile_{n} \
+         t{n}. ! {leaky} ! {mv_rate} ! queue name=q_pvw_{n} \
+         interaudiosrc channel=ain{n} {INTER_AUDIO} ! {AUDIO_CAPS} ! level name=pre{n} {lvl} ! volume name=vol{n} volume=0 ! level name=lvl{n} {lvl} ! queue name=q_audio_{n}"
+    )
+}
+
+fn mic_branch(m: usize) -> String {
+    let lvl = "interval=100000000 post-messages=true";
+    format!(
+        "interaudiosrc channel=mic{m} {INTER_AUDIO} ! {AUDIO_CAPS} ! level name=micpre{m} {lvl} ! volume name=micvol{m} volume=0 ! level name=miclvl{m} {lvl} ! queue name=q_mic_{m}"
+    )
+}
+
+/// Multiview layout: preview and programme on top, then every input as a
+/// tile, in as many columns as it takes to fit the lower half.
+pub fn mv_layout(count: usize) -> Vec<(i32, i32, i32, i32)> {
+    let mut cols = 4usize;
+    loop {
+        let w = MV_W / cols as i32;
+        let h = w * 9 / 16;
+        let rows = count.div_ceil(cols).max(1) as i32;
+        if rows * h <= MV_H / 2 || cols >= count.max(4) {
+            return (0..count)
+                .map(|i| ((i % cols) as i32 * w, MV_H / 2 + (i / cols) as i32 * h, w, h))
+                .collect();
+        }
+        cols += 1;
+    }
 }
 
 fn db(v: f64) -> f64 {
@@ -236,24 +331,13 @@ impl Mixer {
         let caps = Capabilities {
             decklink: has("decklinkvideosrc"),
             ndi: has("ndisrc"),
+            screen: ["avfvideosrc", "d3d11screencapturesrc", "pipewiresrc", "ximagesrc"].iter().any(|e| has(e)),
+            whep: has("whepclientsrc"),
             srt: has("srtsrc"),
             st2110: has("mtl_st20p_rx"),
             encoders: specs::encoders(has),
         };
-        let slots = (1..=SLOTS)
-            .map(|n| SlotRt {
-                info: Slot {
-                    slot: n,
-                    name: format!("Input {n}"),
-                    spec: None,
-                    status: SlotStatus::Empty,
-                    error: None,
-                    audio: SlotAudio::default(),
-                },
-                runner: None,
-                epoch: 0,
-            })
-            .collect();
+        let slots = Vec::new();
         let overlays = (1..=OVERLAYS)
             .map(|i| OverlayRt {
                 o: Overlay {
@@ -284,27 +368,10 @@ impl Mixer {
             outputs: Vec::new(),
             master: Master { volume: 1.0, muted: false },
             next_output: 1,
-            mics: (1..=MICS)
-                .map(|m| MicRt {
-                    info: Mic {
-                        mic: m,
-                        name: format!("Mic {m}"),
-                        device: None,
-                        channel: 0,
-                        status: SlotStatus::Empty,
-                        error: None,
-                        volume: 1.0,
-                        muted: false,
-                        in_program: true,
-                        delay_ms: 0,
-                        strip: Default::default(),
-                    },
-                    runner: None,
-                    epoch: 0,
-                })
-                .collect(),
+            mics: Vec::new(),
             devices: devices::list(),
             out_devices: devices::list_outputs(),
+            video_devices: devices::list_video(),
             vfa: Vfa::default(),
             gfx: (1..=GFX_LAYERS)
                 .map(|l| GraphicsLayer {
@@ -320,10 +387,13 @@ impl Mixer {
             renderer: None,
             renderer_epoch: 0,
             osc_targets: Vec::new(),
+            last_slot: 0,
+            last_mic: 0,
         };
         let (changed, _) = watch::channel(0u64);
         let (levels, _) = watch::channel(Levels { slots: BTreeMap::new(), master: [-90.0, -90.0], mics: BTreeMap::new(), speech: BTreeMap::new() });
         let (jpeg, _) = watch::channel(Bytes::new());
+        let (perf, _) = watch::channel(crate::perf::Perf::default());
         let mixer = Arc::new_cyclic(|me| Mixer {
             format,
             main,
@@ -335,21 +405,31 @@ impl Mixer {
             gfx_runners: Mutex::new((0..GFX_LAYERS).map(|_| None).collect()),
             frame_ports: (0..GFX_LAYERS as u16).map(|i| frame_port + i).collect(),
             osc_listen: Mutex::new(None),
+            slot_bins: Mutex::new(BTreeMap::new()),
+            mic_bins: Mutex::new(BTreeMap::new()),
             caps,
             config,
             changed,
             levels,
             jpeg,
+            perf,
+            frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            model: Mutex::new(crate::perf::Model::default()),
             me: me.clone(),
         });
         mixer.init_pads();
         mixer.attach_jpeg()?;
         mixer.watch_main_bus();
         mixer.main.set_state(gst::State::Playing).context("main pipeline refused to start")?;
+        // Branches added while the pipeline is still changing state can be
+        // left behind (the multiview stalled that way); wait until it runs.
+        let _ = mixer.main.state(gst::ClockTime::from_seconds(5));
         mixer.restore();
         for l in 1..=GFX_LAYERS {
             mixer.start_frames(l);
         }
+        mixer.watch_folders();
+        mixer.watch_load();
         Ok(mixer)
     }
 
@@ -375,14 +455,7 @@ impl Mixer {
 
     fn init_pads(&self) {
         let (w, h) = (self.format.width, self.format.height);
-        for n in 1..=SLOTS {
-            for p in [n, 20 + n, 30 + n] {
-                self.set_pad(&self.pgm, p, Pad::HIDDEN, Z_PROGRAM);
-            }
-            let (x, y, tw, th) = mv_tile(n);
-            self.set_pad(&self.mv, n, Pad { alpha: 1.0, x, y, w: tw, h: th }, 1);
-            self.set_pad(&self.mv, 10 + n, Pad::HIDDEN, 1);
-        }
+        self.set_pad(&self.pgm, 1, Pad::HIDDEN, 0);
         self.set_pad(&self.gfx, GFX_FTB, Pad::HIDDEN, Z_FTB);
         if let Some(p) = self.pad(&self.gfx, GFX_FTB) {
             p.set_property("zorder", Z_FTB);
@@ -391,54 +464,61 @@ impl Mixer {
         for l in 1..=GFX_LAYERS {
             self.set_pad(&self.gfx, l, Pad::HIDDEN, 10 + l as u32);
         }
-        self.set_pad(&self.mv, 0, Pad { alpha: 1.0, x: 640, y: 0, w: 640, h: 360 }, 1);
+        self.set_pad(&self.mv, 0, Pad { alpha: 1.0, x: MV_W / 2, y: 0, w: MV_W / 2, h: MV_H / 2 }, 1);
         let _ = (w, h);
     }
 
     /// Programme layers when no transition runs.
     fn apply_program(&self, c: &Core) {
         let (w, h) = (self.format.width, self.format.height);
-        for n in 1..=SLOTS {
+        for n in c.slot_numbers() {
             let p = if c.program == Some(n) { Pad::full(w, h) } else { Pad::HIDDEN };
-            self.set_pad(&self.pgm, n, p, Z_PROGRAM);
+            self.set_pad(&self.pgm, p_main(n), p, Z_PROGRAM);
         }
     }
 
     fn apply_transition(&self, c: &Core, kind: TransitionKind, k: f64) {
         let (w, h) = (self.format.width, self.format.height);
         let (a, b) = layout::transition(kind, k, w, h);
-        for n in 1..=SLOTS {
+        for n in c.slot_numbers() {
             if c.program == Some(n) {
-                self.set_pad(&self.pgm, n, a, Z_PROGRAM);
+                self.set_pad(&self.pgm, p_main(n), a, Z_PROGRAM);
             } else if c.preview == Some(n) {
-                self.set_pad(&self.pgm, n, b, Z_COMING);
+                self.set_pad(&self.pgm, p_main(n), b, Z_COMING);
             } else {
-                self.set_pad(&self.pgm, n, Pad::HIDDEN, Z_PROGRAM);
+                self.set_pad(&self.pgm, p_main(n), Pad::HIDDEN, Z_PROGRAM);
             }
         }
     }
 
     fn apply_preview(&self, c: &Core) {
-        for n in 1..=SLOTS {
+        for n in c.slot_numbers() {
             let p = if c.preview == Some(n) {
-                Pad { alpha: 1.0, x: 0, y: 0, w: 640, h: 360 }
+                Pad { alpha: 1.0, x: 0, y: 0, w: MV_W / 2, h: MV_H / 2 }
             } else {
                 Pad::HIDDEN
             };
-            self.set_pad(&self.mv, 10 + n, p, 2);
+            self.set_pad(&self.mv, p_pvw(n), p, 2);
         }
     }
 
-    fn apply_overlay(&self, o: &OverlayRt) {
-        let base = if o.o.index == 1 { 20 } else { 30 };
+    /// Tiles for all inputs, in list order.
+    fn apply_tiles(&self, c: &Core) {
+        let nums = c.slot_numbers();
+        for (n, (x, y, w, h)) in nums.iter().zip(mv_layout(nums.len())) {
+            self.set_pad(&self.mv, p_tile(*n), Pad { alpha: 1.0, x, y, w, h }, 1);
+        }
+    }
+
+    fn apply_overlay(&self, slots: &[usize], o: &OverlayRt) {
         let (w, h) = (self.format.width, self.format.height);
-        for n in 1..=SLOTS {
+        for &n in slots {
             let p = if o.o.slot == Some(n) && o.level > 0.0 {
                 layout::overlay(o.o.transition, o.level, o.o.rect, w, h)
             } else {
                 Pad::HIDDEN
             };
-            self.set_pad(&self.pgm, base + n, p, Z_OVERLAY + o.o.index as u32);
+            self.set_pad(&self.pgm, p_overlay(n, o.o.index), p, Z_OVERLAY + o.o.index as u32);
         }
     }
 
@@ -499,6 +579,7 @@ impl Mixer {
             capabilities: self.caps.clone(),
             audio_devices: c.devices.iter().map(|d| d.info.clone()).collect(),
             audio_outputs: c.out_devices.iter().map(|d| d.info.clone()).collect(),
+            video_devices: c.video_devices.iter().map(|d| VideoDevice { id: d.info.id.clone(), name: d.info.name.clone() }).collect(),
             mics: c.mics.iter().map(|m| m.info.clone()).collect(),
             vfa: VfaState { config: c.vfa.cfg.clone(), speaking: c.vfa.speaking() },
             graphics: Graphics {
@@ -507,6 +588,20 @@ impl Mixer {
                 layers: c.gfx.clone(),
             },
             osc: OscState { listen: self.osc_listen.lock().unwrap().clone(), targets: c.osc_targets.clone() },
+            multiview: {
+                let nums = c.slot_numbers();
+                MultiviewLayout {
+                    width: MV_W,
+                    height: MV_H,
+                    preview: Area { x: 0, y: 0, w: MV_W / 2, h: MV_H / 2 },
+                    program: Area { x: MV_W / 2, y: 0, w: MV_W / 2, h: MV_H / 2 },
+                    tiles: nums
+                        .iter()
+                        .zip(mv_layout(nums.len()))
+                        .map(|(&slot, (x, y, w, h))| Tile { slot, area: Area { x, y, w, h } })
+                        .collect(),
+                }
+            },
         }
     }
 
@@ -538,15 +633,24 @@ impl Mixer {
             self.core.lock().unwrap().vfa.manual(now_ms());
         }
         match cmd {
+            Command::AddInput { spec, name } => {
+                self.add_input(spec, name)?;
+            }
+            Command::RemoveInput { slot } => self.remove_input(slot)?,
+            Command::AddMic { name } => {
+                self.add_mic(name)?;
+            }
+            Command::RemoveMic { mic } => self.remove_mic(mic)?,
             Command::SetInput { slot, spec, name } => self.set_input(slot, Some(spec), name)?,
             Command::ClearInput { slot } => self.set_input(slot, None, None)?,
             Command::RenameInput { slot, name } => {
                 let mut c = self.core.lock().unwrap();
-                c.slots.get_mut(slot_idx(slot)?).unwrap().info.name = name;
+                let i = c.si(slot)?;
+                c.slots[i].info.name = name;
             }
             Command::Preview { slot } => {
-                slot_idx(slot)?;
                 let mut c = self.core.lock().unwrap();
+                c.si(slot)?;
                 if c.in_transition {
                     bail!("a transition is running");
                 }
@@ -554,8 +658,8 @@ impl Mixer {
                 self.apply_preview(&c);
             }
             Command::Program { slot } => {
-                slot_idx(slot)?;
                 let mut c = self.core.lock().unwrap();
+                c.si(slot)?;
                 c.trans_epoch += 1;
                 c.in_transition = false;
                 c.tbar = 0.0;
@@ -585,10 +689,11 @@ impl Mixer {
             Command::Ftb => self.ftb(),
             Command::Overlay { index, slot, rect, transition, duration_ms } => {
                 let i = overlay_idx(index)?;
-                if let Some(Some(s)) = slot {
-                    slot_idx(s)?;
-                }
                 let mut c = self.core.lock().unwrap();
+                if let Some(Some(s)) = slot {
+                    c.si(s)?;
+                }
+                let nums = c.slot_numbers();
                 let o = &mut c.overlays[i];
                 if let Some(s) = slot {
                     o.o.slot = s;
@@ -608,12 +713,12 @@ impl Mixer {
                     o.o.duration_ms = d.min(60_000);
                 }
                 let snapshot = OverlayRt { o: o.o.clone(), level: o.level, epoch: o.epoch };
-                self.apply_overlay(&snapshot);
+                self.apply_overlay(&nums, &snapshot);
             }
             Command::OverlayOn { index, on } => self.overlay_on(overlay_idx(index)?, on),
             Command::Audio { slot, volume, muted, afv, delay_ms } => {
-                let i = slot_idx(slot)?;
                 let mut c = self.core.lock().unwrap();
+                let i = c.si(slot)?;
                 let a = &mut c.slots[i].info.audio;
                 if let Some(v) = volume {
                     a.volume = v.clamp(0.0, 2.0);
@@ -645,13 +750,14 @@ impl Mixer {
             Command::SetMic { mic, device, channel, name } => self.set_mic(mic, Some((device, channel)), name)?,
             Command::ClearMic { mic } => self.set_mic(mic, None, None)?,
             Command::RenameMic { mic, name } => {
-                let i = mic_idx(mic)?;
-                self.core.lock().unwrap().mics[i].info.name = name;
+                let mut c = self.core.lock().unwrap();
+                let i = c.mi(mic)?;
+                c.mics[i].info.name = name;
             }
             Command::MicStrip { mic, strip } => self.mic_strip(mic, strip)?,
             Command::MicAudio { mic, volume, muted, in_program, delay_ms } => {
-                let i = mic_idx(mic)?;
                 let mut c = self.core.lock().unwrap();
+                let i = c.mi(mic)?;
                 let m = &mut c.mics[i].info;
                 if let Some(v) = volume {
                     m.volume = v.clamp(0.0, 2.0);
@@ -669,10 +775,11 @@ impl Mixer {
                 self.apply_delays(&c);
             }
             Command::RefreshDevices => {
-                let (found, outs) = (devices::list(), devices::list_outputs());
+                let (found, outs, video) = (devices::list(), devices::list_outputs(), devices::list_video());
                 let mut c = self.core.lock().unwrap();
                 c.devices = found;
                 c.out_devices = outs;
+                c.video_devices = video;
             }
             Command::SetVfa {
                 enabled,
@@ -688,18 +795,23 @@ impl Mixer {
                 transition,
             } => {
                 let mut c = self.core.lock().unwrap();
+                let slot_nums = c.slot_numbers();
+                let mic_nums: Vec<usize> = c.mics.iter().map(|m| m.info.mic).collect();
+                let has_slot = |n: usize| -> Result<()> {
+                    if slot_nums.contains(&n) { Ok(()) } else { bail!("no input {n}") }
+                };
                 let v = &mut c.vfa;
                 let cfg = &mut v.cfg;
                 if let Some(r) = rules {
                     for rule in &r {
-                        slot_idx(rule.camera)?;
+                        has_slot(rule.camera)?;
                         let ok = rule
                             .source
                             .split_once(':')
                             .and_then(|(k, n)| n.parse::<usize>().ok().map(|n| (k, n)))
                             .is_some_and(|(k, n)| match k {
-                                "slot" => (1..=SLOTS).contains(&n),
-                                "mic" => (1..=MICS).contains(&n),
+                                "slot" => slot_nums.contains(&n),
+                                "mic" => mic_nums.contains(&n),
                                 _ => false,
                             });
                         if !ok {
@@ -710,7 +822,7 @@ impl Mixer {
                 }
                 if let Some(w) = wide_slot {
                     if let Some(n) = w {
-                        slot_idx(n)?;
+                        has_slot(n)?;
                     }
                     cfg.wide_slot = w;
                 }
@@ -822,10 +934,177 @@ impl Mixer {
         Ok(())
     }
 
+    // ── inputs and mics come and go ─────────────────────────────────────
+
+    /// Builds an input's branch in the main pipeline and links it to the
+    /// mixers. `n` must not be in use.
+    fn add_slot_branch(&self, n: usize) -> Result<()> {
+        let bin = gst::parse::bin_from_description(&slot_branch(&self.format, n), false)?;
+        bin.set_property("name", format!("slot{n}"));
+        let amix = self.main.by_name("amix").context("amix")?;
+        let links: [(&str, &gst::Element, usize); 6] = [
+            ("pgm", &self.pgm, p_main(n)),
+            ("ov1", &self.pgm, p_overlay(n, 1)),
+            ("ov2", &self.pgm, p_overlay(n, 2)),
+            ("tile", &self.mv, p_tile(n)),
+            ("pvw", &self.mv, p_pvw(n)),
+            ("audio", &amix, n),
+        ];
+        for (name, ..) in &links {
+            let q = bin.by_name(&format!("q_{name}_{n}")).context("branch queue")?;
+            let ghost = gst::GhostPad::with_target(&q.static_pad("src").context("queue src")?)?;
+            ghost.set_property("name", name.to_string());
+            bin.add_pad(&ghost)?;
+        }
+        self.main.add(&bin)?;
+        for (name, mixer, pad) in &links {
+            let sink = mixer
+                .request_pad_simple(&format!("sink_{pad}"))
+                .with_context(|| format!("{} has no pad sink_{pad}", mixer.name()))?;
+            // Hidden until the mixer decides otherwise; tiles get placed below.
+            if *name != "audio" {
+                sink.set_property("alpha", 0.0f64);
+            }
+            bin.static_pad(name).context("ghost")?.link(&sink)?;
+        }
+        bin.sync_state_with_parent()?;
+        self.slot_bins.lock().unwrap().insert(n, bin);
+        Ok(())
+    }
+
+    /// Takes a branch out while everything runs. The mixer inputs go first:
+    /// a queue may be blocked pushing into a full mixer pad, and stopping the
+    /// bin before would wait for that thread forever. Releasing the mixer pad
+    /// flushes it and lets the push return.
+    fn remove_branch(&self, bin: gst::Bin) {
+        for ghost in bin.src_pads() {
+            if let Some(peer) = ghost.peer() {
+                if let Some(parent) = peer.parent_element() {
+                    parent.release_request_pad(&peer);
+                }
+            }
+        }
+        let _ = bin.set_state(gst::State::Null);
+        let _ = self.main.remove(&bin);
+    }
+
+    fn add_mic_branch(&self, m: usize) -> Result<()> {
+        let bin = gst::parse::bin_from_description(&mic_branch(m), false)?;
+        bin.set_property("name", format!("mic{m}"));
+        let q = bin.by_name(&format!("q_mic_{m}")).context("mic queue")?;
+        let ghost = gst::GhostPad::with_target(&q.static_pad("src").context("queue src")?)?;
+        bin.add_pad(&ghost)?;
+        self.main.add(&bin)?;
+        let amix = self.main.by_name("amix").context("amix")?;
+        let sink = amix.request_pad_simple(&format!("sink_{}", MIC_PAD + m)).context("amix pad")?;
+        ghost.link(&sink)?;
+        bin.sync_state_with_parent()?;
+        self.mic_bins.lock().unwrap().insert(m, bin);
+        Ok(())
+    }
+
+    /// New input with the next free number; optionally with a source.
+    fn add_input(&self, spec: Option<String>, name: Option<String>) -> Result<usize> {
+        let n = {
+            let mut c = self.core.lock().unwrap();
+            c.last_slot = c.last_slot.max(c.slots.iter().map(|s| s.info.slot).max().unwrap_or(0)) + 1;
+            c.last_slot
+        };
+        self.add_slot_branch(n)?;
+        {
+            let mut c = self.core.lock().unwrap();
+            c.slots.push(new_slot(n));
+            self.apply_tiles(&c);
+            self.apply_audio(&c);
+        }
+        if spec.is_some() {
+            self.set_input(n, spec, name)?;
+        } else if let Some(nm) = name {
+            let mut c = self.core.lock().unwrap();
+            let i = c.si(n)?;
+            c.slots[i].info.name = nm;
+        }
+        Ok(n)
+    }
+
+    fn remove_input(&self, slot: usize) -> Result<()> {
+        let rt = {
+            let mut c = self.core.lock().unwrap();
+            let i = c.si(slot)?;
+            if c.in_transition && (c.program == Some(slot) || c.preview == Some(slot)) {
+                bail!("input {slot} is in a running transition");
+            }
+            let rt = c.slots.remove(i);
+            if c.program == Some(slot) {
+                c.program = None;
+            }
+            if c.preview == Some(slot) {
+                c.preview = None;
+            }
+            for o in &mut c.overlays {
+                if o.o.slot == Some(slot) {
+                    o.o.slot = None;
+                    o.o.on_air = false;
+                    o.level = 0.0;
+                    o.epoch += 1;
+                }
+            }
+            if c.vfa.cfg.wide_slot == Some(slot) {
+                c.vfa.cfg.wide_slot = None;
+            }
+            c.vfa.cfg.rules.retain(|r| r.camera != slot && r.source != format!("slot:{slot}"));
+            rt
+        };
+        if let Some(r) = rt.runner {
+            r.stop();
+        }
+        if let Some(bin) = self.slot_bins.lock().unwrap().remove(&slot) {
+            self.remove_branch(bin);
+        }
+        let c = self.core.lock().unwrap();
+        self.apply_tiles(&c);
+        self.apply_program(&c);
+        self.apply_preview(&c);
+        Ok(())
+    }
+
+    fn add_mic(&self, name: Option<String>) -> Result<usize> {
+        let m = {
+            let mut c = self.core.lock().unwrap();
+            c.last_mic = c.last_mic.max(c.mics.iter().map(|m| m.info.mic).max().unwrap_or(0)) + 1;
+            c.last_mic
+        };
+        self.add_mic_branch(m)?;
+        let mut c = self.core.lock().unwrap();
+        let mut rt = new_mic(m);
+        if let Some(nm) = name.filter(|n| !n.trim().is_empty()) {
+            rt.info.name = nm;
+        }
+        c.mics.push(rt);
+        self.apply_audio(&c);
+        Ok(m)
+    }
+
+    fn remove_mic(&self, mic: usize) -> Result<()> {
+        let rt = {
+            let mut c = self.core.lock().unwrap();
+            let i = c.mi(mic)?;
+            c.vfa.cfg.rules.retain(|r| r.source != format!("mic:{mic}"));
+            c.mics.remove(i)
+        };
+        if let Some(r) = rt.runner {
+            r.stop();
+        }
+        if let Some(bin) = self.mic_bins.lock().unwrap().remove(&mic) {
+            self.remove_branch(bin);
+        }
+        Ok(())
+    }
+
     fn set_input(&self, slot: usize, spec: Option<String>, name: Option<String>) -> Result<()> {
-        let i = slot_idx(slot)?;
         let old = {
             let mut c = self.core.lock().unwrap();
+            let i = c.si(slot)?;
             let s = &mut c.slots[i];
             s.epoch += 1;
             s.info.spec = spec.clone();
@@ -847,10 +1126,40 @@ impl Mixer {
     }
 
     fn start_input(&self, slot: usize, spec: &str, name: Option<String>) {
-        let i = slot - 1;
-        let epoch = self.core.lock().unwrap().slots[i].epoch;
-        let plan = specs::input(spec, &self.format, slot, has);
+        let epoch = {
+            let c = self.core.lock().unwrap();
+            let Ok(i) = c.si(slot) else { return };
+            c.slots[i].epoch
+        };
+        // Capture devices come from the device monitor and are built in code.
+        let mut prebuilt: Option<gst::Pipeline> = None;
+        let plan = match devices::parse_capture_spec(spec) {
+            Some((vid, aid)) => {
+                let mut c = self.core.lock().unwrap();
+                if !c.video_devices.iter().any(|d| d.info.id == vid) {
+                    c.video_devices = devices::list_video();
+                }
+                let built = match c.video_devices.iter().find(|d| d.info.id == vid) {
+                    None => Err(anyhow!("capture device '{vid}' not found")),
+                    Some(v) => {
+                        let a = aid.and_then(|a| c.devices.iter().find(|d| d.info.id == a));
+                        if aid.is_some() && a.is_none() {
+                            Err(anyhow!("audio device '{}' not found", aid.unwrap_or_default()))
+                        } else {
+                            devices::capture_pipeline(v, a, &self.format, slot)
+                        }
+                    }
+                };
+                built.map(|p| {
+                    prebuilt = Some(p);
+                    specs::InputPlan { launch: String::new(), looping: false, retry: true, name: vid.to_string() }
+                })
+            }
+            None => specs::input(spec, &self.format, slot, has),
+        };
         let mut c = self.core.lock().unwrap();
+        // The input may have been removed or changed meanwhile.
+        let Ok(i) = c.si(slot) else { return };
         if c.slots[i].epoch != epoch {
             return;
         }
@@ -871,11 +1180,16 @@ impl Mixer {
         let me = self.me.clone();
         let retry = plan.retry;
         let spec_owned = spec.to_string();
-        match Runner::start(&plan.launch, plan.looping, false, move |ev| {
+        let on_event = move |ev| {
             if let Some(m) = me.upgrade() {
                 m.input_event(slot, epoch, retry, &spec_owned, ev);
             }
-        }) {
+        };
+        let started = match prebuilt {
+            Some(p) => Runner::start_pipeline(p, false, false, on_event),
+            None => Runner::start(&plan.launch, plan.looping, false, on_event),
+        };
+        match started {
             Ok(r) => c.slots[i].runner = Some(r),
             Err(e) => {
                 let s = &mut c.slots[i].info;
@@ -894,9 +1208,9 @@ impl Mixer {
     }
 
     fn input_event(&self, slot: usize, epoch: u64, retry: bool, spec: &str, ev: Event) {
-        let i = slot - 1;
         let old = {
             let mut c = self.core.lock().unwrap();
+            let Ok(i) = c.si(slot) else { return };
             if c.slots[i].epoch != epoch {
                 return;
             }
@@ -933,6 +1247,7 @@ impl Mixer {
                 let Some(m) = me.upgrade() else { return };
                 {
                     let mut c = m.core.lock().unwrap();
+                    let Ok(i) = c.si(slot) else { return };
                     if c.slots[i].epoch != epoch {
                         return;
                     }
@@ -1106,6 +1421,7 @@ impl Mixer {
         animate(dur, easing, move |k, last| {
             let Some(m) = me.upgrade() else { return false };
             let mut c = m.core.lock().unwrap();
+            let nums = c.slot_numbers();
             let o = &mut c.overlays[i];
             if o.epoch != epoch {
                 return false;
@@ -1115,7 +1431,7 @@ impl Mixer {
             o.level = if last { to } else { from + (to - from) * k };
             let snap = OverlayRt { o: o.o.clone(), level: o.level, epoch };
             drop(c);
-            m.apply_overlay(&snap);
+            m.apply_overlay(&nums, &snap);
             true
         });
     }
@@ -1325,6 +1641,10 @@ impl Mixer {
                 mics: c.mics.iter().map(|m| m.info.clone()).collect(),
                 vfa: Some(c.vfa.cfg.clone()),
                 osc_targets: c.osc_targets.clone(),
+                costs: {
+                    let (a, b, measured) = self.model.lock().unwrap().costs();
+                    measured.then_some((a, b))
+                },
             }
         };
         let Ok(json) = serde_json::to_vec_pretty(&saved) else { return };
@@ -1337,21 +1657,48 @@ impl Mixer {
         }
     }
 
-    fn restore(&self) {
-        let Some(path) = &self.config else { return };
-        let Ok(bytes) = std::fs::read(path) else { return };
-        let saved: Saved = match serde_json::from_slice(&bytes) {
-            Ok(s) => s,
+    fn load_saved(&self) -> Option<Saved> {
+        let path = self.config.as_ref()?;
+        let bytes = std::fs::read(path).ok()?;
+        match serde_json::from_slice(&bytes) {
+            Ok(s) => Some(s),
             Err(e) => {
                 tracing::warn!("ignoring unreadable config {}: {e}", path.display());
-                return;
+                None
             }
+        }
+    }
+
+    /// Inputs and mics from the settings file, or a first-start set of
+    /// eight inputs and four mics.
+    fn restore(&self) {
+        let fresh = Saved {
+            slots: (1..=8)
+                .map(|n| SavedSlot { slot: n, name: format!("Input {n}"), spec: None, audio: SlotAudio::default() })
+                .collect(),
+            mics: (1..=4).map(|m| new_mic(m).info).collect(),
+            ..Default::default()
         };
+        let saved = self.load_saved().unwrap_or(fresh);
+        for s in &saved.slots {
+            if let Err(e) = self.add_slot_branch(s.slot) {
+                tracing::error!("input {}: {e:#}", s.slot);
+            }
+        }
+        for m in &saved.mics {
+            if let Err(e) = self.add_mic_branch(m.mic) {
+                tracing::error!("mic {}: {e:#}", m.mic);
+            }
+        }
         let mut start = Vec::new();
         {
             let mut c = self.core.lock().unwrap();
+            let built: Vec<usize> = self.slot_bins.lock().unwrap().keys().copied().collect();
             for s in saved.slots {
-                let Some(rt) = c.slots.get_mut(s.slot.wrapping_sub(1)) else { continue };
+                if !built.contains(&s.slot) {
+                    continue;
+                }
+                let mut rt = new_slot(s.slot);
                 rt.info.name = s.name;
                 rt.info.audio = s.audio;
                 if let Some(spec) = s.spec {
@@ -1359,6 +1706,7 @@ impl Mixer {
                     rt.info.status = SlotStatus::Starting;
                     start.push((s.slot, spec));
                 }
+                c.slots.push(rt);
             }
             if let Some(t) = saved.transition {
                 c.transition = t;
@@ -1371,9 +1719,12 @@ impl Mixer {
             if let Some(m) = saved.master {
                 c.master = m;
             }
+            let built: Vec<usize> = self.mic_bins.lock().unwrap().keys().copied().collect();
             for m in saved.mics {
-                if let Some(rt) = c.mics.get_mut(m.mic.wrapping_sub(1)) {
+                if built.contains(&m.mic) {
+                    let mut rt = new_mic(m.mic);
                     rt.info = Mic { status: SlotStatus::Empty, error: None, ..m };
+                    c.mics.push(rt);
                 }
             }
             if let Some(v) = saved.vfa {
@@ -1381,16 +1732,22 @@ impl Mixer {
                 c.vfa = Vfa::new(crate::vfa::VfaConfig { enabled: false, ..v });
             }
             c.osc_targets = saved.osc_targets;
-            c.program = saved.program.filter(|n| (1..=SLOTS).contains(n));
-            c.preview = saved.preview.filter(|n| (1..=SLOTS).contains(n));
+            self.model.lock().unwrap().prior = saved.costs;
+            let nums = c.slot_numbers();
+            c.program = saved.program.filter(|n| nums.contains(n));
+            c.preview = saved.preview.filter(|n| nums.contains(n));
+            self.apply_tiles(&c);
             self.apply_program(&c);
             self.apply_preview(&c);
             self.apply_audio(&c);
             self.apply_delays(&c);
         }
         for (slot, spec) in start {
-            let name = self.core.lock().unwrap().slots[slot - 1].info.name.clone();
-            self.start_input(slot, &spec, Some(name));
+            let name = {
+                let c = self.core.lock().unwrap();
+                c.si(slot).map(|i| c.slots[i].info.name.clone()).ok()
+            };
+            self.start_input(slot, &spec, name);
         }
         let mics: Vec<(usize, String, u32)> = self
             .core
@@ -1411,9 +1768,9 @@ impl Mixer {
     // ── microphones ─────────────────────────────────────────────────────
 
     fn set_mic(&self, mic: usize, source: Option<(String, u32)>, name: Option<String>) -> Result<()> {
-        let i = mic_idx(mic)?;
         let (old, epoch) = {
             let mut c = self.core.lock().unwrap();
+            let i = c.mi(mic)?;
             let m = &mut c.mics[i];
             m.epoch += 1;
             m.info.error = None;
@@ -1445,6 +1802,7 @@ impl Mixer {
             // Plugged in after start: look again once.
             c.devices = devices::list();
         }
+        let i = c.mi(mic)?;
         let built = match c.devices.iter().find(|d| d.info.id == dev) {
             Some(d) => devices::mic_pipeline(d, ch, mic, &c.mics[i].info.strip),
             None => Err(anyhow!("audio device '{dev}' not found")),
@@ -1455,6 +1813,7 @@ impl Mixer {
                 let Some(m) = me.upgrade() else { return };
                 {
                     let mut c = m.core.lock().unwrap();
+                    let Ok(i) = c.mi(mic) else { return };
                     let rt = &mut c.mics[i];
                     if rt.epoch != epoch {
                         return;
@@ -1491,9 +1850,9 @@ impl Mixer {
     /// Merges partial strip settings. Denoising changes the pipeline and
     /// restarts the mic; everything else is changed while it runs.
     fn mic_strip(&self, mic: usize, patch: serde_json::Value) -> Result<()> {
-        let i = mic_idx(mic)?;
         let (restart, device) = {
             let mut c = self.core.lock().unwrap();
+            let i = c.mi(mic)?;
             let m = &mut c.mics[i];
             let mut v = serde_json::to_value(&m.info.strip)?;
             if let (Some(obj), Some(p)) = (v.as_object_mut(), patch.as_object()) {
@@ -1534,10 +1893,133 @@ impl Mixer {
             }
         }
         for m in &c.mics {
-            if let Some(p) = amix.static_pad(&format!("sink_{}", 20 + m.info.mic)) {
+            if let Some(p) = amix.static_pad(&format!("sink_{}", MIC_PAD + m.info.mic)) {
                 p.set_offset(ns(m.info.delay_ms));
             }
         }
+    }
+
+    /// Folder inputs show the newest image; look once a second for a newer one.
+    fn watch_folders(&self) {
+        let me = self.me.clone();
+        std::thread::spawn(move || {
+            let mut seen: std::collections::HashMap<usize, (std::path::PathBuf, Option<std::time::SystemTime>)> =
+                Default::default();
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let Some(m) = me.upgrade() else { return };
+                let folders: Vec<(usize, String, String)> = m
+                    .core
+                    .lock()
+                    .unwrap()
+                    .slots
+                    .iter()
+                    .filter_map(|s| {
+                        let spec = s.info.spec.clone()?;
+                        spec.starts_with("folder:").then(|| (s.info.slot, spec, s.info.name.clone()))
+                    })
+                    .collect();
+                seen.retain(|slot, _| folders.iter().any(|f| f.0 == *slot));
+                for (slot, spec, name) in folders {
+                    let Some(img) = specs::newest_image(std::path::Path::new(&spec[7..])) else { continue };
+                    let mtime = std::fs::metadata(&img).and_then(|m| m.modified()).ok();
+                    let now = (img, mtime);
+                    match seen.get(&slot) {
+                        Some(prev) if *prev == now => {}
+                        Some(_) => {
+                            seen.insert(slot, now);
+                            let _ = m.set_input(slot, Some(spec), Some(name));
+                            m.notify();
+                        }
+                        None => {
+                            seen.insert(slot, now);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Once a second: CPU, memory, programme frame rate and the forecast.
+    fn watch_load(&self) {
+        // Every programme frame passes the graphics stage once.
+        if let Some(src) = self.gfx.static_pad("src") {
+            let frames = self.frames.clone();
+            src.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                frames.fetch_add(1, Ordering::Relaxed);
+                gst::PadProbeReturn::Ok
+            });
+        }
+        let me = self.me.clone();
+        std::thread::spawn(move || {
+            use sysinfo::{ProcessesToUpdate, System};
+            let mut sys = System::new();
+            let pid = sysinfo::get_current_pid().ok();
+            let mut last_frames = 0u64;
+            let mut last_t = Instant::now();
+            let mut stable_since = Instant::now();
+            let mut last_counts = (usize::MAX, usize::MAX);
+            let mut slow_secs = 0;
+            let mut sys_avg: std::collections::VecDeque<f64> = Default::default();
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let Some(m) = me.upgrade() else { return };
+                sys.refresh_cpu_usage();
+                sys.refresh_memory();
+                if let Some(pid) = pid {
+                    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+                }
+                let cores = sys.cpus().len().max(1);
+                let (proc_cpu, proc_mem) = pid
+                    .and_then(|p| sys.process(p))
+                    .map(|p| (p.cpu_usage() as f64, p.memory() / 1_048_576))
+                    .unwrap_or((0.0, 0));
+                let frames = m.frames.load(Ordering::Relaxed);
+                let dt = last_t.elapsed().as_secs_f64();
+                last_t = Instant::now();
+                let fps = (frames - last_frames) as f64 / dt.max(0.001);
+                last_frames = frames;
+                let nominal = m.format.fps;
+                slow_secs = if fps < nominal * 0.95 { slow_secs + 1 } else { 0 };
+                let overloaded = slow_secs >= 2;
+                let (inputs, mics) = {
+                    let c = m.core.lock().unwrap();
+                    (
+                        c.slots.iter().filter(|s| s.info.status == SlotStatus::Running).count(),
+                        c.mics.iter().filter(|x| x.info.status == SlotStatus::Running).count(),
+                    )
+                };
+                // Learn only from steady states: counts unchanged for 3 s.
+                if (inputs, mics) != last_counts {
+                    last_counts = (inputs, mics);
+                    stable_since = Instant::now();
+                } else if stable_since.elapsed() >= Duration::from_secs(3) && !overloaded {
+                    m.model.lock().unwrap().add(inputs, mics, proc_cpu);
+                }
+                let system = sys.global_cpu_usage() as f64;
+                // A 3-sample average keeps the forecast from jumping with every spike.
+                sys_avg.push_back(system);
+                if sys_avg.len() > 3 {
+                    sys_avg.pop_front();
+                }
+                let system_avg = sys_avg.iter().sum::<f64>() / sys_avg.len() as f64;
+                let forecast = crate::perf::forecast(&m.model.lock().unwrap(), cores, system_avg, overloaded);
+                m.perf.send_replace(crate::perf::Perf {
+                    cpu: (proc_cpu / cores as f64 * 10.0).round() / 10.0,
+                    system_cpu: (sys.global_cpu_usage() as f64 * 10.0).round() / 10.0,
+                    cores,
+                    memory_used_mb: sys.used_memory() / 1_048_576,
+                    memory_total_mb: sys.total_memory() / 1_048_576,
+                    process_memory_mb: proc_mem,
+                    output_fps: (fps * 10.0).round() / 10.0,
+                    nominal_fps: nominal,
+                    overloaded,
+                    running_inputs: inputs,
+                    running_mics: mics,
+                    forecast,
+                });
+            }
+        });
     }
 
     // ── video follows audio ─────────────────────────────────────────────
@@ -1578,8 +2060,8 @@ impl Mixer {
 
     /// Straight to programme without touching what the operator has on preview.
     fn take(&self, slot: usize) -> Result<()> {
-        slot_idx(slot)?;
         let mut c = self.core.lock().unwrap();
+        c.si(slot)?;
         c.trans_epoch += 1;
         c.in_transition = false;
         c.tbar = 0.0;
@@ -1739,22 +2221,6 @@ fn animate(duration_ms: u64, easing: Easing, step: impl Fn(f64, bool) -> bool + 
     });
 }
 
-fn slot_idx(slot: usize) -> Result<usize> {
-    if (1..=SLOTS).contains(&slot) {
-        Ok(slot - 1)
-    } else {
-        bail!("slot must be 1..{SLOTS}")
-    }
-}
-
-fn mic_idx(m: usize) -> Result<usize> {
-    if (1..=MICS).contains(&m) {
-        Ok(m - 1)
-    } else {
-        bail!("mic must be 1..{MICS}")
-    }
-}
-
 fn gfx_idx(l: usize) -> Result<usize> {
     if (1..=GFX_LAYERS).contains(&l) {
         Ok(l - 1)
@@ -1803,19 +2269,23 @@ mod tests {
 
     #[test]
     fn multiview_tiles_fill_the_lower_half() {
-        assert_eq!(mv_tile(1), (0, 360, 320, 180));
-        assert_eq!(mv_tile(4), (960, 360, 320, 180));
-        assert_eq!(mv_tile(5), (0, 540, 320, 180));
-        assert_eq!(mv_tile(8), (960, 540, 320, 180));
+        let l = mv_layout(8);
+        assert_eq!((l[0], l[3], l[4], l[7]), ((0, 360, 320, 180), (960, 360, 320, 180), (0, 540, 320, 180), (960, 540, 320, 180)));
+        // More inputs: more columns, still inside the lower half.
+        for n in [1, 9, 12, 20, 40, 100] {
+            let l = mv_layout(n);
+            assert_eq!(l.len(), n);
+            assert!(l.iter().all(|&(x, y, w, h)| x + w <= MV_W && y + h <= MV_H && w > 0), "{n}");
+        }
     }
 
     #[test]
-    fn main_launch_names_every_pad() {
-        let l = main_launch(&Format::parse("1080p50").unwrap());
-        for n in 1..=SLOTS {
-            for p in [format!("pgm.sink_{n} "), format!("pgm.sink_{} ", 20 + n), format!("mv.sink_{} ", 10 + n)] {
-                assert!(l.contains(&p), "{p}");
-            }
+    fn branches_name_their_ends() {
+        let b = slot_branch(&Format::parse("1080p50").unwrap(), 3);
+        for q in ["q_pgm_3", "q_ov1_3", "q_ov2_3", "q_tile_3", "q_pvw_3", "q_audio_3"] {
+            assert!(b.contains(&format!("name={q}")), "{q}");
         }
+        assert!(mic_branch(2).contains("name=q_mic_2"));
     }
+
 }

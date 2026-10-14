@@ -9,10 +9,11 @@ import { OutputsPanel } from './components/OutputsPanel'
 import { OverlayPanel } from './components/OverlayPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
+import { PerfButton } from './components/PerfView'
 import { TransitionPanel } from './components/TransitionPanel'
 import { Icon, Segmented, StatusSign, Tabs } from './components/ui'
 import { VfaPanel, VfaSwitch } from './components/VfaPanel'
-import { gfxPlayCommand, keyToAction } from './helpers'
+import { gfxPlayCommand, keyToAction, slotForKey } from './helpers'
 import { getLang, setLang, t } from './i18n'
 import type { State } from './types'
 
@@ -63,8 +64,11 @@ function runKey(e: KeyboardEvent, openHelp: () => void) {
   e.preventDefault()
   switch (a.kind) {
     case 'preview':
-    case 'program':
-      return send({ cmd: a.kind, slot: a.slot })
+    case 'program': {
+      const slot = s ? slotForKey(s.slots, a.position) : null
+      if (slot != null) send({ cmd: a.kind, slot })
+      return
+    }
     case 'cut':
     case 'auto':
     case 'ftb':
@@ -217,6 +221,7 @@ export function App() {
           </span>
         )}
         <span className="spacer" />
+        <PerfButton />
         <ConnectionState />
         <button type="button" className="btn btn-icon btn-ghost hide-narrow" onClick={() => setHelp(true)} aria-label={t('Keyboard shortcuts')} title={`${t('Keyboard shortcuts')} (?)`}>
           <Icon name="keyboard" />
