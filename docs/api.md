@@ -89,6 +89,121 @@ type Command =
   | { cmd: 'removeOutput'; id: string }
 ```
 
+## Microphones (audio devices)
+
+Besides the audio embedded in the eight inputs, the mixer takes up to eight microphone channels from audio interfaces (CoreAudio, WASAPI, PulseAudio/PipeWire). Each mic is one channel of one device; the same device can feed several mics. Mics are mixed into the programme like inputs (fader, mute) unless `inProgram` is off — then they only steer video follows audio.
+
+```ts
+interface AudioDevice { id: string; name: string; channels: number }
+
+interface Mic {
+  mic: number               // 1..8
+  name: string
+  device: string | null     // AudioDevice.id; null = unused
+  channel: number           // 0-based channel of the device
+  status: 'empty'|'starting'|'running'|'error'
+  error: string | null
+  volume: number            // 0..2, 1 = 0 dB
+  muted: boolean
+  inProgram: boolean        // mixed into the programme audio
+}
+```
+
+State gains `audioDevices: AudioDevice[]` and `mics: Mic[]`. Every source always appears in `speech`; silence and unused sources are `-90`. `Levels` gains `mics: Record<number, number>` (peak dBFS, mono) and `speech: Record<string, number>` — pre-fader RMS in dBFS per VFA source (`"slot:3"`, `"mic:2"`), which is what video follows audio listens to.
+
+Commands:
+```ts
+  | { cmd: 'setMic'; mic: number; device: string; channel: number; name?: string }
+  | { cmd: 'clearMic'; mic: number }
+  | { cmd: 'renameMic'; mic: number; name: string }
+  | { cmd: 'micAudio'; mic: number; volume?: number; muted?: boolean; inProgram?: boolean }
+  | { cmd: 'refreshDevices' }
+```
+
+## Video follows audio (VFA)
+
+Cuts to the camera of whoever speaks — for podcasts, talk rounds, panels. Each rule ties an audio source (an input's own audio or a mic) to a camera input. Decisions use pre-fader RMS levels ten times a second:
+
+- A source **speaks** when it is above `thresholdDb` and at least `dominanceDb` louder than every other source (so bleed into the neighbour's mic does not count).
+- A speaker must hold for `attackMs` before the mixer cuts (no cuts on a cough).
+- A shot stays at least `minShotMs`.
+- Two or more sources within `dominanceDb` of each other above the threshold (cross-talk), or silence longer than `silenceMs`, go to `wideSlot` (if set).
+- With `maxShotMs` > 0, a single speaker held longer than that gets a cut to the wide shot for `wideBreakMs`, then back.
+- Switching uses `transition`: `'cut'` or `'auto'` (the selected transition with its curve).
+- A manual cut, auto or T-bar move restarts the minimum shot time; VFA keeps running. `enabled: false` stops it.
+
+```ts
+interface VfaRule { source: string /* "slot:N" | "mic:N" */; camera: number /* input slot */ }
+interface Vfa {
+  enabled: boolean
+  rules: VfaRule[]
+  wideSlot: number | null
+  thresholdDb: number      // default -42
+  dominanceDb: number      // default 6
+  attackMs: number         // default 400
+  minShotMs: number        // default 2500
+  silenceMs: number        // default 2500
+  maxShotMs: number        // default 0 = off
+  wideBreakMs: number      // default 3000
+  transition: 'cut' | 'auto'
+  speaking: string | null  // source of the shot on air ("mic:2"), "wide", or null before the first decision;
+                           // during a pause it keeps the last decision until silenceMs goes wide
+}
+```
+
+State gains `vfa: Vfa`. Commands:
+```ts
+  | { cmd: 'setVfa'; enabled?: boolean; rules?: VfaRule[]; wideSlot?: number | null; thresholdDb?: number;
+      dominanceDb?: number; attackMs?: number; minShotMs?: number; silenceMs?: number; maxShotMs?: number;
+      wideBreakMs?: number; transition?: 'cut' | 'auto' }
+```
+Companion: `GET /api/vfa/on`, `/api/vfa/off`, `/api/vfa/toggle`.
+
+## Graphics (EBU OGraf)
+
+Two graphics layers sit above everything else in the programme (above the overlays, below fade to black). They play [EBU OGraf v1](https://github.com/ebu/ograf) graphics — lower thirds, bugs, titles — rendered with transparency by the **graphics renderer**, a separate small app (`renderer/`) that the engine starts or that connects on its own. Any OGraf graphic works, including the one from lz-presenter.
+
+```ts
+interface GraphicInfo {
+  id: string               // manifest id
+  name: string
+  description: string
+  path: string             // folder on the renderer machine
+  schema: object | null    // the manifest's JSON schema for `data` (GDD), to build a form
+  stepCount: number        // 1, n, or -1 (dynamic)
+  customActions: { id: string; name: string; description?: string; schema?: object }[]
+}
+interface GraphicsLayer {
+  layer: number            // 1..2
+  graphicId: string | null
+  data: object             // last data sent with load/update
+  status: 'empty'|'loading'|'ready'|'playing'|'stopped'|'error'
+  step: number             // current step (0-based) while playing
+  error: string | null
+}
+interface Graphics { rendererConnected: boolean; library: GraphicInfo[]; layers: GraphicsLayer[] }
+```
+
+State gains `graphics: Graphics`. Commands:
+```ts
+  | { cmd: 'gfxLoad'; layer: number; graphicId: string; data?: object }   // loads, does not play
+  | { cmd: 'gfxPlay'; layer: number; delta?: number; goto?: number; skipAnimation?: boolean } // OGraf playAction, params passed on unchanged
+  | { cmd: 'gfxStop'; layer: number; skipAnimation?: boolean }            // OGraf stopAction
+  | { cmd: 'gfxUpdate'; layer: number; data: object }                     // OGraf updateAction; allowed whenever a graphic is loaded
+  | { cmd: 'gfxCustom'; layer: number; id: string; payload?: object }     // OGraf customAction
+  | { cmd: 'gfxClear'; layer: number }                                    // dispose
+  | { cmd: 'gfxRescan' }                                                  // re-read the graphics folders
+```
+Companion: `GET /api/gfx/<layer>/play`, `/api/gfx/<layer>/next` (play with delta 1), `/api/gfx/<layer>/stop`.
+
+### Renderer protocol (engine ↔ renderer, local only)
+
+- The renderer opens a WebSocket to `ws://127.0.0.1:4195/renderer`. The engine sends `{"type":"hello","format":{"width","height","fps"},"layers":2,"framePorts":[4198,4199]}`.
+- For each layer the renderer connects a TCP socket to `127.0.0.1:<framePort>` and writes raw frames: BGRA, premultiplied = false, `width × height × 4` bytes each, back to back, no header. It sends a frame whenever the picture changes (and at least once after connecting); the engine holds the last frame. A fully transparent frame clears the layer.
+- Engine → renderer: `{"type":"load","layer","graphicId","data"}`, `{"type":"play","layer","params":{delta?,goto?,skipAnimation?}}`, `{"type":"stop","layer","params":{skipAnimation?}}`, `{"type":"update","layer","data"}`, `{"type":"custom","layer","id","payload"}`, `{"type":"clear","layer"}`, `{"type":"rescan"}`.
+- Renderer → engine: `{"type":"library","graphics":GraphicInfo[]}` (after connecting and after every rescan), `{"type":"layer","layer","graphicId","status","step","error"}` on every change.
+- Graphics folders scanned by the renderer: its bundled `graphics/` folder, `~/Documents/LZ Vision Mixer/Graphics`, and any folders given with `--graphics <dir>`. A graphic is an `*.ograf.json` manifest with its files; a folder may hold several. When two graphics share an id, the later folder in this order wins. Before `load`, the renderer fills in the schema defaults under the data it receives; `GraphicsLayer.data` holds only what was sent. A `load` on a layer that is on air replaces the graphic with a hard cut. On every `hello` the renderer clears both layers.
+
 ## Source specs
 
 | Spec | Source |

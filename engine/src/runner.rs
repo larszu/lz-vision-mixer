@@ -32,6 +32,15 @@ impl Runner {
             .with_context(|| format!("cannot build pipeline: {launch}"))?
             .downcast::<gst::Pipeline>()
             .map_err(|_| anyhow::anyhow!("not a pipeline"))?;
+        Self::start_pipeline(pipeline, looping, needs_eos, on_event)
+    }
+
+    pub fn start_pipeline(
+        pipeline: gst::Pipeline,
+        looping: bool,
+        needs_eos: bool,
+        on_event: impl Fn(Event) + Send + 'static,
+    ) -> Result<Runner> {
         let bus = pipeline.bus().context("pipeline without bus")?;
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();

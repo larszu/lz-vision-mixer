@@ -1,0 +1,33 @@
+{
+  "$schema": "https://ograf.ebu.io/v1/specification/json-schemas/graphics/schema.json",
+  "id": "lz-title",
+  "version": "1.0.0",
+  "name": "LZ Title",
+  "description": "Title or caption card inside the title-safe area: optional kicker with head line, headline in capitals, subline. Lars Zumpe Medienproduktion design.",
+  "author": { "name": "Lars Zumpe Medienproduktion", "url": "https://zumpelars.de" },
+  "main": "graphic.mjs",
+  "supportsRealTime": true,
+  "supportsNonRealTime": false,
+  "stepCount": 1,
+  "actionDurations": [
+    { "type": "playAction", "duration": 650 },
+    { "type": "updateAction", "duration": 450 },
+    { "type": "stopAction", "duration": 450 }
+  ],
+  "schema": {
+    "type": "object",
+    "properties": {
+      "kicker": { "type": "string", "title": "Kicker (small, above)", "default": "" },
+      "headline": { "type": "string", "title": "Headline", "default": "Titel der Sendung" },
+      "subline": { "type": "string", "title": "Subline", "default": "Untertitel · Ort · Datum" },
+      "backdrop": {
+        "type": "string",
+        "title": "Backdrop",
+        "description": "Plate: navy block behind the text. Full: deep navy over the whole picture. None: text only.",
+        "enum": ["plate", "full", "none"],
+        "gddOptions": { "labels": { "plate": "Plate", "full": "Full frame", "none": "None" } },
+        "default": "plate"
+      }
+    }
+  }
+}

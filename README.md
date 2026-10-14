@@ -1,8 +1,12 @@
 # LZ Vision Mixer
 
-**Software vision mixer in the manner of vMix: eight inputs, preview/programme with eased transitions, overlays, multiview, and outputs to DeckLink SDI, NDI, SRT, RTMP and recording.** Engine in Rust on GStreamer, controlled from the browser, Bitfocus Companion or plain HTTP. macOS, Windows, Linux.
+**Software vision mixer in the manner of vMix: eight inputs, preview/programme with eased transitions, video follows audio for podcasts and talk rounds, EBU OGraf graphics, overlays, multiview, and outputs to DeckLink SDI, NDI, SRT, RTMP and recording.** Engine in Rust on GStreamer, controlled from the browser, Bitfocus Companion or plain HTTP. macOS, Windows, Linux.
 
 ![Web UI](docs/ui.png)
+
+![Lower third from the bundled OGraf graphic](docs/lower-third.png)
+
+More views: [video follows audio](docs/ui-vfa.png) · [graphics](docs/ui-graphics.png) · [microphones](docs/ui-mics.png)
 
 ## What it does
 
@@ -15,6 +19,13 @@
 - **Preview / programme** like a hardware mixer: Cut, Auto, T-bar, fade to black. Transitions: cut, mix, dip through black, push left/right, slide left/right, zoom — each with one of eleven easing curves (linear, sine, quad, cubic, quart, quint, expo, circ, back, elastic, bounce; in, out or in-out). The T-bar drives the transition by hand, without a curve. After a transition, programme and preview swap.
 - **Two overlays** above the programme (downstream key or picture-in-picture), any input at any position and size, in and out with cut, fade, fly from four sides or zoom.
 - **Audio**: one fader, mute and audio-follow-video per input plus master, with peak meters. With audio-follow-video the input is heard while it is on programme, and crossfades along with a transition.
+- **Microphones**: up to eight channels from audio interfaces (CoreAudio, WASAPI, PulseAudio/PipeWire) — one channel of one device each, with fader, mute and a switch whether the mic goes into the programme audio.
+- **Video follows audio** for podcasts, talk rounds and panels: each microphone (or an input's own audio) belongs to a camera. The mixer cuts to whoever speaks, judged on pre-fader levels:
+  - a speaker must be above the threshold and clearly louder than everyone else (bleed into the neighbour's mic does not count), and must hold for the attack time — a cough does not cut;
+  - every shot stays for a minimum time;
+  - cross-talk and longer silence go to the wide shot; with a maximum shot time set, a long monologue gets a short wide shot in between;
+  - cut or the selected transition with its curve; a manual cut restarts the minimum shot time, video follows audio keeps running. It never starts by itself after a restart.
+- **Graphics in EBU OGraf**: two graphics layers above everything except fade to black, with per-pixel transparency. Lower thirds, bugs and titles are OGraf graphics (any OGraf v1 graphic works, including lz-presenter's lyrics), played by the graphics renderer — a small companion app (`renderer/`) that renders them and sends the frames to the engine. Load, play, next step, update on air, custom actions, out. Bundled: lower third, corner bug and title card in the Lars Zumpe Medienproduktion design.
 - **Multiview** 1280×720: preview and programme on top, the eight inputs below. Shown in the UI, and available as an SDI output.
 - **Outputs**, any number at the same time, added and removed while running:
   - `decklink:<n>` — programme to SDI with embedded audio, in the programme format
@@ -24,8 +35,8 @@
   - `rtmp://server/app/key`
   - `record:<file>.mp4` (H.264/AAC, fragmented so a crash still leaves a playable file) or `record:<file>.mov` (ProRes 422 HQ, 24-bit PCM)
   - Hardware encoders when present: VideoToolbox (macOS), NVENC, Quick Sync; otherwise x264.
-- **Control**: web UI at `http://127.0.0.1:4195`, WebSocket and HTTP API ([docs/api.md](docs/api.md)), short GET URLs for Companion (`/api/cut`, `/api/auto`, `/api/preview/3`, `/api/overlay/1/toggle` …).
-- Inputs, names, audio settings, transition and overlay settings are remembered between runs. Outputs are not started automatically.
+- **Control**: web UI at `http://127.0.0.1:4195`, WebSocket and HTTP API ([docs/api.md](docs/api.md)), short GET URLs for Companion (`/api/cut`, `/api/auto`, `/api/preview/3`, `/api/overlay/1/toggle`, `/api/vfa/toggle`, `/api/gfx/1/play`, `/api/gfx/1/next`, `/api/gfx/1/stop` …).
+- Inputs, microphones, names, audio settings, transition, overlay and video-follows-audio settings are remembered between runs. Outputs and video follows audio are not started automatically.
 
 ## Formats
 
@@ -38,7 +49,8 @@
    - Windows: the MSVC runtime installer from [gstreamer.freedesktop.org](https://gstreamer.freedesktop.org/download/) (complete installation)
    - Linux (Debian/Ubuntu): `sudo apt install gstreamer1.0-plugins-{base,good,bad,ugly} gstreamer1.0-libav`
 2. For DeckLink: Blackmagic Desktop Video (driver). For NDI: the NDI runtime from [ndi.video](https://ndi.video/) and the GStreamer NDI plugin (part of the Homebrew package; on Linux/Windows from gst-plugins-rs).
-3. Download the engine for your system from [Releases](https://github.com/larszu/lz-vision-mixer/releases) and start it:
+3. For graphics: install **LZ Vision Mixer Graphics** (the renderer) from the same release page. Start it next to the engine — it connects by itself and shows its status in a small window and the tray — or let the engine start it: `--renderer "/Applications/LZ Vision Mixer Graphics.app"`. Own OGraf graphics go into `~/Documents/LZ Vision Mixer/Graphics`.
+4. Download the engine for your system from [Releases](https://github.com/larszu/lz-vision-mixer/releases) and start it:
    ```bash
    ./lz-vision-mixer --open                 # 1080p50, UI on 127.0.0.1:4195
    ./lz-vision-mixer --format 1080p59.94 --listen 0.0.0.0:4195
@@ -49,7 +61,7 @@ The UI shows which of DeckLink, NDI, SRT and the encoders this computer can use.
 
 ## Status
 
-Version 0.1. Tested on macOS (Apple M1 Pro) with test patterns, SRT out→in, NDI detection, recording to MP4 and ProRes, transitions, overlays and fade to black. **Not yet tested: DeckLink hardware (no card at hand), NDI with an installed runtime, Windows and Linux builds on real machines, long runs.** On the M1 Pro, three 1080p50 test inputs with multiview take about two CPU cores.
+Tested on macOS (Apple M1 Pro) with test patterns, SRT out→in, NDI detection, recording to MP4 and ProRes, transitions, overlays, fade to black, a microphone of the built-in interface, video follows audio (speaker, silence → wide) and the bundled OGraf lower third through the renderer. **Not yet tested: DeckLink hardware (no card at hand), NDI with an installed runtime, multi-channel audio interfaces and Dante Virtual Soundcard, a real podcast with several speakers, Windows and Linux builds on real machines, long runs.** The audio latency through the mixer has not been measured yet; it suits the programme mix for streaming and recording, not PA or in-ear monitoring in the room. On the M1 Pro, three 1080p50 test inputs with multiview take about two CPU cores.
 
 ## SMPTE ST 2110
 
@@ -61,7 +73,9 @@ The mixer is built so that ST 2110 becomes one more source and output kind: the 
 cd ui && npm install && npm run build      # web UI → ui/dist (embedded into the engine)
 cd ../engine && cargo run -- --open        # engine on 4195
 cd ../ui && npm run dev                    # UI with hot reload on 4196, proxies to the engine
+cd ../renderer && npm install && npm start # graphics renderer, connects to the engine on 4195
 cd ui && npm run mock                      # engine mock on 4195 for UI work without GStreamer
+PORT=4295 npm run mock && ENGINE=http://127.0.0.1:4295 npm run dev   # mock beside a running engine
 cargo test --manifest-path engine/Cargo.toml
 ```
 

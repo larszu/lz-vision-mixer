@@ -2,10 +2,13 @@
 
 use crate::easing::Easing;
 use crate::format::Format;
+use crate::vfa::{VfaConfig, VfaRule, VfaTransition};
 use serde::{Deserialize, Serialize};
 
 pub const SLOTS: usize = 8;
 pub const OVERLAYS: usize = 2;
+pub const MICS: usize = 8;
+pub const GFX_LAYERS: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -148,12 +151,116 @@ pub struct State {
     pub outputs: Vec<Output>,
     pub master: Master,
     pub capabilities: Capabilities,
+    pub audio_devices: Vec<AudioDevice>,
+    pub mics: Vec<Mic>,
+    pub vfa: VfaState,
+    pub graphics: Graphics,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioDevice {
+    pub id: String,
+    pub name: String,
+    pub channels: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Mic {
+    pub mic: usize,
+    pub name: String,
+    pub device: Option<String>,
+    pub channel: u32,
+    #[serde(skip_deserializing, default = "empty_status")]
+    pub status: SlotStatus,
+    #[serde(skip_deserializing)]
+    pub error: Option<String>,
+    pub volume: f64,
+    pub muted: bool,
+    pub in_program: bool,
+}
+
+fn empty_status() -> SlotStatus {
+    SlotStatus::Empty
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VfaState {
+    #[serde(flatten)]
+    pub config: VfaConfig,
+    pub speaking: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomAction {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphicInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub schema: Option<serde_json::Value>,
+    #[serde(default = "one")]
+    pub step_count: i64,
+    #[serde(default)]
+    pub custom_actions: Vec<CustomAction>,
+}
+
+fn one() -> i64 {
+    1
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GfxStatus {
+    Empty,
+    Loading,
+    Ready,
+    Playing,
+    Stopped,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphicsLayer {
+    pub layer: usize,
+    pub graphic_id: Option<String>,
+    pub data: serde_json::Value,
+    pub status: GfxStatus,
+    pub step: i64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Graphics {
+    pub renderer_connected: bool,
+    pub library: Vec<GraphicInfo>,
+    pub layers: Vec<GraphicsLayer>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Levels {
     pub slots: std::collections::BTreeMap<usize, [f64; 2]>,
     pub master: [f64; 2],
+    pub mics: std::collections::BTreeMap<usize, f64>,
+    /// Pre-fader RMS per video-follows-audio source ("slot:3", "mic:2").
+    pub speech: std::collections::BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -184,6 +291,37 @@ pub enum Command {
     Master { volume: Option<f64>, muted: Option<bool> },
     AddOutput { spec: String },
     RemoveOutput { id: String },
+    SetMic { mic: usize, device: String, channel: u32, name: Option<String> },
+    ClearMic { mic: usize },
+    RenameMic { mic: usize, name: String },
+    #[serde(rename_all = "camelCase")]
+    MicAudio { mic: usize, volume: Option<f64>, muted: Option<bool>, in_program: Option<bool> },
+    RefreshDevices,
+    #[serde(rename_all = "camelCase")]
+    SetVfa {
+        enabled: Option<bool>,
+        rules: Option<Vec<VfaRule>>,
+        #[serde(default, deserialize_with = "double_option")]
+        wide_slot: Option<Option<usize>>,
+        threshold_db: Option<f64>,
+        dominance_db: Option<f64>,
+        attack_ms: Option<u64>,
+        min_shot_ms: Option<u64>,
+        silence_ms: Option<u64>,
+        max_shot_ms: Option<u64>,
+        wide_break_ms: Option<u64>,
+        transition: Option<VfaTransition>,
+    },
+    #[serde(rename_all = "camelCase")]
+    GfxLoad { layer: usize, graphic_id: String, data: Option<serde_json::Value> },
+    #[serde(rename_all = "camelCase")]
+    GfxPlay { layer: usize, delta: Option<i64>, goto: Option<i64>, skip_animation: Option<bool> },
+    #[serde(rename_all = "camelCase")]
+    GfxStop { layer: usize, skip_animation: Option<bool> },
+    GfxUpdate { layer: usize, data: serde_json::Value },
+    GfxCustom { layer: usize, id: String, payload: Option<serde_json::Value> },
+    GfxClear { layer: usize },
+    GfxRescan,
 }
 
 /// Tells "slot": null (clear) apart from a missing "slot" (leave as is).

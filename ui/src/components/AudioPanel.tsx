@@ -1,60 +1,8 @@
-import { useRef, useState } from 'react'
 import { send, useLevels } from '../client'
-import { faderToGain, formatDb, gainToFader, meterFill, meterZone } from '../helpers'
+import { formatDb } from '../helpers'
 import { t } from '../i18n'
 import type { State } from '../types'
-import { Panel } from './ui'
-
-function Meter({ peaks }: { peaks: [number, number] | undefined }) {
-  const [l, r] = peaks ?? [-90, -90]
-  return (
-    <div className="meter" aria-hidden="true">
-      {[l, r].map((db, i) => (
-        <div key={i} className="meter-ch">
-          <div className={`meter-fill zone-${meterZone(db)}`} style={{ height: `${meterFill(db) * 100}%` }} />
-        </div>
-      ))}
-    </div>
-  )
-}
-
-/** Fader in dB travel; volume sends are coalesced per frame while dragging. */
-function Fader({ volume, label, onVolume }: { volume: number; label: string; onVolume: (v: number) => void }) {
-  const [drag, setDrag] = useState<number | null>(null)
-  const pending = useRef<number | null>(null)
-  const pos = drag ?? gainToFader(volume)
-  const queue = (g: number) => {
-    if (pending.current == null)
-      requestAnimationFrame(() => {
-        if (pending.current != null) onVolume(pending.current)
-        pending.current = null
-      })
-    pending.current = g
-  }
-  return (
-    <input
-      type="range"
-      className="fader"
-      min={0}
-      max={1000}
-      value={Math.round(pos * 1000)}
-      aria-label={label}
-      aria-valuetext={`${formatDb(faderToGain(pos))} dB`}
-      title={t('Double-click for 0 dB')}
-      onChange={(e) => {
-        const p = Number(e.target.value) / 1000
-        setDrag(p)
-        queue(faderToGain(p))
-      }}
-      onPointerUp={() => setDrag(null)}
-      onBlur={() => setDrag(null)}
-      onDoubleClick={() => {
-        setDrag(null)
-        onVolume(1)
-      }}
-    />
-  )
-}
+import { Fader, Meter, Panel } from './ui'
 
 function Strip({
   name,
@@ -87,7 +35,7 @@ function Strip({
         <Fader volume={volume} label={`${t('Volume')} ${name}`} onVolume={onVolume} />
       </div>
       <span className="strip-db">{formatDb(volume)} dB</span>
-      <button type="button" className={`btn btn-sm ${muted ? 'selected warn' : ''}`} aria-pressed={muted} onClick={onMute}>
+      <button type="button" className={`btn btn-sm btn-mute ${muted ? 'active' : ''}`} aria-pressed={muted} onClick={onMute}>
         {t('Mute')}
       </button>
       {onAfv && (

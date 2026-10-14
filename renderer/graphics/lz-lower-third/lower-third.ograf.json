@@ -1,0 +1,46 @@
+{
+  "$schema": "https://ograf.ebu.io/v1/specification/json-schemas/graphics/schema.json",
+  "id": "lz-lower-third",
+  "version": "1.0.0",
+  "name": "LZ Lower third",
+  "description": "Name and function in two lines, optional third line. Lars Zumpe Medienproduktion design: navy plate with tally edge, or open with line and tally dot.",
+  "author": { "name": "Lars Zumpe Medienproduktion", "url": "https://zumpelars.de" },
+  "main": "graphic.mjs",
+  "supportsRealTime": true,
+  "supportsNonRealTime": false,
+  "stepCount": 1,
+  "actionDurations": [
+    { "type": "playAction", "duration": 650 },
+    { "type": "updateAction", "duration": 450 },
+    { "type": "stopAction", "duration": 700 }
+  ],
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string", "title": "Name", "default": "Petra Beispiel" },
+      "title": { "type": "string", "title": "Function / title", "default": "Geschäftsführung · Musterfirma GmbH" },
+      "extra": { "type": "string", "title": "Third line (small, optional)", "default": "" },
+      "position": {
+        "type": "string",
+        "title": "Position",
+        "enum": ["left", "right"],
+        "gddOptions": { "labels": { "left": "Left", "right": "Right" } },
+        "default": "left"
+      },
+      "accentDot": {
+        "type": "boolean",
+        "title": "Tally accent",
+        "description": "Red edge on the plate, red tally dot in the open style. Off: steel blue edge, no dot.",
+        "default": true
+      },
+      "style": {
+        "type": "string",
+        "title": "Style",
+        "description": "Plate for busy backgrounds and streams, open for calm backgrounds",
+        "enum": ["plate", "open"],
+        "gddOptions": { "labels": { "plate": "Plate", "open": "Open" } },
+        "default": "plate"
+      }
+    }
+  }
+}

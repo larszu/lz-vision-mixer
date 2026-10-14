@@ -14,6 +14,16 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run build
+  renderer:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: renderer } }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: npm, cache-dependency-path: renderer/package-lock.json }
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
   engine:
     runs-on: ubuntu-latest
     steps:

@@ -35,7 +35,7 @@ export function SourceDialog({ slot, caps, onClose }: { slot: Slot; caps: Capabi
         }}
       >
         <header className="panel-head">
-          <h2 className="kicker" id="src-title">
+          <h2 className="dialog-title" id="src-title">
             {t('Input')} {slot.slot}
           </h2>
         </header>
