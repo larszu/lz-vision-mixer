@@ -20,15 +20,19 @@ pub enum SlotStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SlotAudio {
     pub volume: f64,
     pub muted: bool,
     pub afv: bool,
+    /// Lip-sync delay, 0..=500 ms.
+    #[serde(default)]
+    pub delay_ms: u32,
 }
 
 impl Default for SlotAudio {
     fn default() -> Self {
-        SlotAudio { volume: 1.0, muted: false, afv: true }
+        SlotAudio { volume: 1.0, muted: false, afv: true, delay_ms: 0 }
     }
 }
 
@@ -152,9 +156,19 @@ pub struct State {
     pub master: Master,
     pub capabilities: Capabilities,
     pub audio_devices: Vec<AudioDevice>,
+    pub audio_outputs: Vec<AudioDevice>,
     pub mics: Vec<Mic>,
     pub vfa: VfaState,
     pub graphics: Graphics,
+    pub osc: OscState,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OscState {
+    /// Address the engine receives OSC on, or null when off.
+    pub listen: Option<String>,
+    /// "host:port" targets that get tally and status feedback.
+    pub targets: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -178,6 +192,10 @@ pub struct Mic {
     pub volume: f64,
     pub muted: bool,
     pub in_program: bool,
+    #[serde(default)]
+    pub delay_ms: u32,
+    #[serde(default)]
+    pub strip: crate::dsp::StripParams,
 }
 
 fn empty_status() -> SlotStatus {
@@ -263,7 +281,7 @@ pub struct Levels {
     pub speech: std::collections::BTreeMap<String, f64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "cmd", rename_all = "camelCase")]
 pub enum Command {
     SetInput { slot: usize, spec: String, name: Option<String> },
@@ -287,7 +305,8 @@ pub enum Command {
         duration_ms: Option<u64>,
     },
     OverlayOn { index: usize, on: bool },
-    Audio { slot: usize, volume: Option<f64>, muted: Option<bool>, afv: Option<bool> },
+    #[serde(rename_all = "camelCase")]
+    Audio { slot: usize, volume: Option<f64>, muted: Option<bool>, afv: Option<bool>, delay_ms: Option<u32> },
     Master { volume: Option<f64>, muted: Option<bool> },
     AddOutput { spec: String },
     RemoveOutput { id: String },
@@ -295,7 +314,9 @@ pub enum Command {
     ClearMic { mic: usize },
     RenameMic { mic: usize, name: String },
     #[serde(rename_all = "camelCase")]
-    MicAudio { mic: usize, volume: Option<f64>, muted: Option<bool>, in_program: Option<bool> },
+    MicAudio { mic: usize, volume: Option<f64>, muted: Option<bool>, in_program: Option<bool>, delay_ms: Option<u32> },
+    /// Partial strip settings; missing fields stay as they are.
+    MicStrip { mic: usize, strip: serde_json::Value },
     RefreshDevices,
     #[serde(rename_all = "camelCase")]
     SetVfa {
@@ -322,6 +343,7 @@ pub enum Command {
     GfxCustom { layer: usize, id: String, payload: Option<serde_json::Value> },
     GfxClear { layer: usize },
     GfxRescan,
+    SetOscTargets { targets: Vec<String> },
 }
 
 /// Tells "slot": null (clear) apart from a missing "slot" (leave as is).

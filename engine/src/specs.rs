@@ -9,6 +9,9 @@
 use crate::format::Format;
 use anyhow::{bail, Result};
 
+/// Inter-audio buffering. The default (1 s buffer) lets audio fall a second
+/// behind the picture; measured 1.15 s at 1080p50 before this was set.
+pub const INTER_AUDIO: &str = "buffer-time=50000000 latency-time=20000000 period-time=10000000";
 pub const AUDIO_CAPS: &str = "audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved";
 /// Internal picture format. 8-bit 4:2:0 for now; 10-bit 4:2:2 is planned.
 pub const VIDEO_FORMAT: &str = "I420";
@@ -156,7 +159,7 @@ fn video_in(f: &Format, channel: &str) -> String {
 }
 
 fn audio_in() -> String {
-    format!("interaudiosrc channel=pgma ! {AUDIO_CAPS} ! queue")
+    format!("interaudiosrc channel=pgma {INTER_AUDIO} ! {AUDIO_CAPS} ! queue")
 }
 
 /// First available element of a list, with its settings for a given bitrate.
@@ -290,10 +293,12 @@ pub fn output(spec: &str, f: &Format, has: impl Fn(&str) -> bool) -> Result<Outp
                     true,
                 )
             } else {
-                // Fragmented MP4: a crash mid-recording still leaves a playable file.
+                // The index is written ahead and refreshed every 5 s: a crash leaves a
+                // playable file. Fragmented MP4 lost the start offset of the video
+                // track (audio 150 ms late in players), this does not.
                 plan(
                     format!(
-                        "mp4mux name=m fragment-duration=1000 ! filesink location={} {} ! videoconvert ! {} ! h264parse ! queue ! m. {} ! audioconvert ! {} ! aacparse ! queue ! m.",
+                        "mp4mux name=m reserved-max-duration=43200000000000 reserved-moov-update-period=5000000000 ! filesink location={} {} ! videoconvert ! {} ! h264parse ! queue ! m. {} ! audioconvert ! {} ! aacparse ! queue ! m.",
                         q(rest),
                         video_in(f, "pgm"),
                         h264(&has, 20000, f)?,

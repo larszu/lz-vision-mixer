@@ -15,7 +15,7 @@ describe('German translation', () => {
       const text = readFileSync(join(src, f), 'utf8')
       for (const m of text.matchAll(/\bt\('([^']+)'\)/g)) if (!keys.has(m[1])) missing.push(`${f}: ${m[1]}`)
       // Data tables whose strings go through t() at render time.
-      if (f === 'helpers.ts' || f === 'vfa.ts')
+      if (['helpers.ts', 'vfa.ts', 'strip.ts', 'osc.ts'].includes(f))
         for (const m of text.matchAll(/\b(?:label|hint|action): '([^']+)'/g)) if (!keys.has(m[1])) missing.push(`${f}: ${m[1]}`)
     }
     expect(missing).toEqual([])

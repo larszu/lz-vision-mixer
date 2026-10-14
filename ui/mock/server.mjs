@@ -21,7 +21,7 @@ const slot = (n, name, spec, extra = {}) => ({
   spec,
   status: spec ? 'running' : 'empty',
   error: null,
-  audio: { volume: 1, muted: false, afv: true },
+  audio: { volume: 1, muted: false, afv: true, delayMs: 0 },
   ...extra,
 })
 
@@ -58,6 +58,7 @@ const state = {
     encoders: ['x264enc', 'avenc_aac'],
   },
   audioDevices: [],
+  audioOutputs: [],
   mics: [],
   vfa: {
     enabled: false,
@@ -78,6 +79,7 @@ const state = {
     speaking: null,
   },
   graphics: { rendererConnected: process.env.MOCK_NO_RENDERER !== '1', library: [], layers: [] },
+  osc: { listen: process.env.MOCK_OSC_OFF === '1' ? null : '127.0.0.1:4210', targets: ['127.0.0.1:12321'] },
 }
 state.slots[6].status = state.capabilities.decklink ? 'running' : 'error'
 if (state.capabilities.decklink) state.slots[6].error = null
@@ -92,6 +94,50 @@ const DEVICES = [
 // "Refresh devices" plugs a recorder in or out, so the refresh is visible.
 const EXTRA_DEVICE = { id: 'coreaudio:podtrak-p4', name: 'PodTrak P4', channels: 4 }
 state.audioDevices = [...DEVICES]
+const OUT_DEVICES = [
+  { id: 'coreaudio:builtin-out', name: 'MacBook Pro Speakers', channels: 2 },
+  { id: 'coreaudio:scarlett-18i8-out', name: 'Scarlett 18i8 USB', channels: 8 },
+  { id: 'coreaudio:blackhole-2ch', name: 'BlackHole 2ch', channels: 2 },
+]
+const EXTRA_OUT = { id: 'coreaudio:podtrak-p4-out', name: 'PodTrak P4', channels: 2 }
+state.audioOutputs = [...OUT_DEVICES]
+
+// Channel strip: neutral defaults and the contract ranges (docs/api.md, Strip).
+const STRIP_DEFAULT = {
+  hpfHz: 0,
+  gate: false,
+  gateThresholdDb: -50,
+  gateRangeDb: 20,
+  comp: false,
+  compThresholdDb: -20,
+  compRatio: 3,
+  compAttackMs: 10,
+  compReleaseMs: 150,
+  makeupDb: 0,
+  denoise: false,
+}
+const STRIP_LIMITS = {
+  gateThresholdDb: [-90, 0],
+  gateRangeDb: [0, 90],
+  compThresholdDb: [-60, 0],
+  compRatio: [1, 20],
+  compAttackMs: [0.1, 200],
+  compReleaseMs: [10, 2000],
+  makeupDb: [-20, 24],
+}
+const SPEECH = {
+  denoise: true,
+  hpfHz: 80,
+  gate: true,
+  gateThresholdDb: -50,
+  gateRangeDb: 20,
+  comp: true,
+  compThresholdDb: -20,
+  compRatio: 3,
+  compAttackMs: 10,
+  compReleaseMs: 150,
+  makeupDb: 3,
+}
 
 const mic = (n, name = '', device = null, channel = 0, extra = {}) => ({
   mic: n,
@@ -103,15 +149,17 @@ const mic = (n, name = '', device = null, channel = 0, extra = {}) => ({
   volume: 1,
   muted: false,
   inProgram: true,
+  delayMs: 0,
   ...extra,
+  strip: { ...STRIP_DEFAULT, ...extra.strip },
 })
 state.mics = [
-  mic(1, 'Host', 'coreaudio:scarlett-18i8', 0),
-  mic(2, 'Guest 1', 'coreaudio:scarlett-18i8', 1),
+  mic(1, 'Host', 'coreaudio:scarlett-18i8', 0, { strip: SPEECH, delayMs: 40 }),
+  mic(2, 'Guest 1', 'coreaudio:scarlett-18i8', 1, { strip: { hpfHz: 100, comp: true, compRatio: 2.5 } }),
   mic(3, 'Guest 2', 'coreaudio:scarlett-18i8', 2),
   mic(4, 'Room', 'coreaudio:usb-codec', 0, { inProgram: false }),
   mic(5, 'Phone', 'coreaudio:podtrak-p4', 0, { status: 'error', error: 'Device not found: coreaudio:podtrak-p4' }),
-  mic(6),
+  mic(6, 'Spare'),
   mic(7),
   mic(8),
 ]
@@ -119,6 +167,10 @@ state.mics = [
 /* ---------- graphics library (what the renderer bundles) ---------- */
 
 const LYRICS = JSON.parse(readFileSync(join(here, 'lyrics.ograf.json'), 'utf8'))
+const CAPTIONS_FILE = join(here, '..', '..', 'renderer', 'graphics', 'lz-captions', 'captions.ograf.json')
+const CAPTIONS = existsSync(CAPTIONS_FILE)
+  ? JSON.parse(readFileSync(CAPTIONS_FILE, 'utf8'))
+  : { id: 'lz-captions', name: 'LZ Captions', schema: { type: 'object', properties: { text: { type: 'string', title: 'Text', default: '' } } } }
 const graphicInfo = (m, path) => ({
   id: m.id,
   name: m.name,
@@ -192,6 +244,7 @@ const LIBRARY = [
     'renderer/graphics/lz-title',
   ),
   graphicInfo(LYRICS, 'renderer/graphics/lz-lyrics'),
+  graphicInfo(CAPTIONS, 'renderer/graphics/lz-captions'),
 ]
 state.graphics.library = state.graphics.rendererConnected ? LIBRARY : []
 state.graphics.layers = [1, 2].map((layer) => ({ layer, graphicId: null, data: {}, status: 'empty', step: 0, error: null }))
@@ -282,7 +335,13 @@ function sourceProblem(spec) {
   return null
 }
 
+function delay(v) {
+  need(typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 500, 'delayMs must be 0..500')
+  return Math.round(v)
+}
+
 function outputProblem(spec) {
+  if (spec.startsWith('audio:') && !state.audioOutputs.some((d) => `audio:${d.id}` === spec)) return `Audio device not found: ${spec.slice(6)}`
   if (spec.startsWith('decklink') && !state.capabilities.decklink) return 'DeckLink not available'
   if (spec.startsWith('ndi:') && !state.capabilities.ndi) return 'NDI not available'
   if (spec.startsWith('srt://') && !state.capabilities.srt) return 'SRT not available'
@@ -379,6 +438,7 @@ function apply(c) {
     }
     case 'audio': {
       const s = getSlot(c.slot)
+      if ('delayMs' in c) s.audio.delayMs = delay(c.delayMs)
       if (typeof c.volume === 'number') s.audio.volume = Math.max(0, Math.min(2, c.volume))
       if (typeof c.muted === 'boolean') s.audio.muted = c.muted
       if (typeof c.afv === 'boolean') s.audio.afv = c.afv
@@ -390,7 +450,7 @@ function apply(c) {
       break
     case 'addOutput': {
       need(typeof c.spec === 'string' && c.spec.trim(), 'Missing spec')
-      need(/^(decklink(-mv)?:\d+|ndi:.+|srt:\/\/.+|rtmp:\/\/.+|record:.+)$/.test(c.spec), `Unknown output spec: ${c.spec}`)
+      need(/^(decklink(-mv)?:\d+|ndi:.+|srt:\/\/.+|rtmp:\/\/.+|record:.+|audio:.+)$/.test(c.spec), `Unknown output spec: ${c.spec}`)
       const o = { id: `out-${++outputSeq}`, spec: c.spec, status: 'starting', error: null }
       state.outputs.push(o)
       const problem = outputProblem(c.spec)
@@ -422,6 +482,38 @@ function apply(c) {
       }, 400)
       break
     }
+    case 'renameMic':
+      need(typeof c.name === 'string', 'Missing name')
+      getMic(c.mic).name = c.name.trim()
+      break
+    case 'micStrip': {
+      const m = getMic(c.mic)
+      need(c.strip && typeof c.strip === 'object', 'Missing strip')
+      const next = { ...m.strip }
+      for (const [k, v] of Object.entries(c.strip)) {
+        need(k in STRIP_DEFAULT, `Unknown strip field: ${k}`)
+        if (typeof STRIP_DEFAULT[k] === 'boolean') {
+          need(typeof v === 'boolean', `${k} must be true or false`)
+        } else {
+          need(typeof v === 'number' && Number.isFinite(v), `${k} must be a number`)
+          if (k === 'hpfHz') need(v === 0 || (v >= 20 && v <= 400), 'hpfHz must be 0 or 20..400')
+          else need(v >= STRIP_LIMITS[k][0] && v <= STRIP_LIMITS[k][1], `${k} must be ${STRIP_LIMITS[k][0]}..${STRIP_LIMITS[k][1]}`)
+        }
+        next[k] = v
+      }
+      const restart = next.denoise !== m.strip.denoise && m.device
+      m.strip = next
+      if (restart && m.status === 'running') {
+        // Like the engine: switching denoise rebuilds the mic pipeline.
+        m.status = 'starting'
+        setTimeout(() => {
+          if (m.status !== 'starting') return
+          m.status = 'running'
+          pushState()
+        }, 600)
+      }
+      break
+    }
     case 'clearMic':
       Object.assign(getMic(c.mic), { device: null, channel: 0, status: 'empty', error: null })
       break
@@ -430,11 +522,13 @@ function apply(c) {
       if (typeof c.volume === 'number') m.volume = Math.max(0, Math.min(2, c.volume))
       if (typeof c.muted === 'boolean') m.muted = c.muted
       if (typeof c.inProgram === 'boolean') m.inProgram = c.inProgram
+      if ('delayMs' in c) m.delayMs = delay(c.delayMs)
       break
     }
     case 'refreshDevices': {
       const has = state.audioDevices.some((d) => d.id === EXTRA_DEVICE.id)
       state.audioDevices = has ? [...DEVICES] : [...DEVICES, EXTRA_DEVICE]
+      state.audioOutputs = has ? [...OUT_DEVICES] : [...OUT_DEVICES, EXTRA_OUT]
       for (const m of state.mics) {
         if (!m.device) continue
         const ok = state.audioDevices.some((d) => d.id === m.device)
@@ -516,6 +610,21 @@ function apply(c) {
       need(state.graphics.rendererConnected, 'Graphics renderer not connected')
       state.graphics.library = [...LIBRARY]
       break
+    case 'setOscTargets': {
+      need(Array.isArray(c.targets), 'targets must be an array')
+      const seen = new Set()
+      for (const t of c.targets) {
+        need(typeof t === 'string', 'Each target is a "host:port" string')
+        const m = /^(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9.-]+):(\d+)$/.exec(t.trim())
+        need(m, `Bad OSC target: ${t} (use host:port)`)
+        const port = Number(m[2])
+        need(port >= 1 && port <= 65535, `Bad OSC port: ${t}`)
+        need(!seen.has(t.trim().toLowerCase()), `Duplicate OSC target: ${t}`)
+        seen.add(t.trim().toLowerCase())
+      }
+      state.osc.targets = c.targets.map((t) => t.trim())
+      break
+    }
     default:
       throw new CmdError(`Unknown cmd: ${c.cmd}`)
   }

@@ -3,12 +3,15 @@
 
 mod easing;
 mod devices;
+mod dsp;
 mod format;
 mod layout;
 mod mixer;
+mod osc;
 mod runner;
 mod server;
 mod specs;
+mod strip_element;
 mod state;
 mod vfa;
 
@@ -42,6 +45,10 @@ struct Args {
     /// executable) and connect it.
     #[arg(long)]
     renderer: Option<PathBuf>,
+    /// Receive OSC here (UDP). Use 0.0.0.0:4210 for senders on other machines;
+    /// "off" disables OSC.
+    #[arg(long, default_value = "127.0.0.1:4210")]
+    osc: String,
 }
 
 #[tokio::main]
@@ -53,6 +60,7 @@ async fn main() -> Result<()> {
         .init();
     let args = Args::parse();
     gstreamer::init().context("GStreamer is not installed or cannot start")?;
+    strip_element::register().context("cannot register the channel strip")?;
     let format = format::Format::parse(&args.format)?;
     let config = if args.no_config {
         None
@@ -82,6 +90,20 @@ async fn main() -> Result<()> {
         match cmd.arg("--engine").arg(&engine).arg("--hidden").spawn() {
             Ok(c) => child = Some(c),
             Err(e) => tracing::error!("cannot start the graphics renderer {}: {e}", path.display()),
+        }
+    }
+    if args.osc != "off" {
+        match args.osc.parse::<SocketAddr>() {
+            Ok(addr) => {
+                *mixer.osc_listen.lock().unwrap() = Some(addr.to_string());
+                let m = mixer.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = osc::run(m, addr).await {
+                        tracing::error!("OSC on {addr}: {e:#}");
+                    }
+                });
+            }
+            Err(e) => tracing::error!("--osc {}: {e}", args.osc),
         }
     }
     let m = mixer.clone();

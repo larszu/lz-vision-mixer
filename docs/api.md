@@ -28,7 +28,7 @@ interface Slot {
   spec: string | null       // source, see "Source specs"; null = empty slot (black)
   status: 'empty'|'starting'|'running'|'error'
   error: string | null
-  audio: { volume: number /* 0..2, 1 = 0 dB */; muted: boolean; afv: boolean /* audio follows video */ }
+  audio: { volume: number /* 0..2, 1 = 0 dB */; muted: boolean; afv: boolean /* audio follows video */; delayMs: number /* 0..500 */ }
 }
 
 interface Rect { x: number; y: number; w: number; h: number } // normalised 0..1 of the frame, x/y = top-left
@@ -83,7 +83,7 @@ type Command =
   | { cmd: 'ftb' }                            // toggle fade to black (uses transition duration and easing)
   | { cmd: 'overlay'; index: number; slot?: number | null; rect?: Rect; transition?: Overlay['transition']; durationMs?: number }
   | { cmd: 'overlayOn'; index: number; on: boolean }   // animated
-  | { cmd: 'audio'; slot: number; volume?: number; muted?: boolean; afv?: boolean }
+  | { cmd: 'audio'; slot: number; volume?: number; muted?: boolean; afv?: boolean; delayMs?: number }
   | { cmd: 'master'; volume?: number; muted?: boolean }
   | { cmd: 'addOutput'; spec: string }
   | { cmd: 'removeOutput'; id: string }
@@ -106,17 +106,31 @@ interface Mic {
   volume: number            // 0..2, 1 = 0 dB
   muted: boolean
   inProgram: boolean        // mixed into the programme audio
+  delayMs: number           // lip-sync delay 0..500
+  strip: Strip              // channel strip, see below
+}
+
+interface Strip {           // all optional in micStrip; missing fields stay as they are
+  hpfHz: number             // high-pass corner 20..400 Hz, 0 = off
+  gate: boolean; gateThresholdDb: number /* -90..0 */; gateRangeDb: number /* 0..90 */
+  comp: boolean; compThresholdDb: number /* -60..0 */; compRatio: number /* 1..20 */
+  compAttackMs: number /* 0.1..200 */; compReleaseMs: number /* 10..2000 */
+  makeupDb: number          // -20..24
+  denoise: boolean          // RNNoise speech denoising; switching it restarts the mic briefly
 }
 ```
 
-State gains `audioDevices: AudioDevice[]` and `mics: Mic[]`. Every source always appears in `speech`; silence and unused sources are `-90`. `Levels` gains `mics: Record<number, number>` (peak dBFS, mono) and `speech: Record<string, number>` — pre-fader RMS in dBFS per VFA source (`"slot:3"`, `"mic:2"`), which is what video follows audio listens to.
+Defaults (neutral): `hpfHz 0, gate false, gateThresholdDb -50, gateRangeDb 20, comp false, compThresholdDb -20, compRatio 3, compAttackMs 10, compReleaseMs 150, makeupDb 0, denoise false`. Values outside the ranges are clamped; `hpfHz` above 0 and below 20 becomes 20. The strip runs in this order: denoise → high-pass (12 dB/oct Butterworth) → gate (120 ms hold) → compressor (soft knee) → makeup. Pre-fader speech levels for video follows audio are measured after the strip. Input slots have `audio.delayMs` too (command `audio` with `delayMs`).
+
+State gains `audioDevices: AudioDevice[]` (inputs), `audioOutputs: AudioDevice[]` (outputs, for the `audio:` output) and `mics: Mic[]`. `refreshDevices` re-reads both. Every source always appears in `speech`; silence and unused sources are `-90`. `Levels` gains `mics: Record<number, number>` (peak dBFS, mono) and `speech: Record<string, number>` — pre-fader RMS in dBFS per VFA source (`"slot:3"`, `"mic:2"`), which is what video follows audio listens to.
 
 Commands:
 ```ts
   | { cmd: 'setMic'; mic: number; device: string; channel: number; name?: string }
   | { cmd: 'clearMic'; mic: number }
   | { cmd: 'renameMic'; mic: number; name: string }
-  | { cmd: 'micAudio'; mic: number; volume?: number; muted?: boolean; inProgram?: boolean }
+  | { cmd: 'micAudio'; mic: number; volume?: number; muted?: boolean; inProgram?: boolean; delayMs?: number }
+  | { cmd: 'micStrip'; mic: number; strip: Partial<Strip> }
   | { cmd: 'refreshDevices' }
 ```
 
@@ -204,6 +218,25 @@ Companion: `GET /api/gfx/<layer>/play`, `/api/gfx/<layer>/next` (play with delta
 - Renderer → engine: `{"type":"library","graphics":GraphicInfo[]}` (after connecting and after every rescan), `{"type":"layer","layer","graphicId","status","step","error"}` on every change.
 - Graphics folders scanned by the renderer: its bundled `graphics/` folder, `~/Documents/LZ Vision Mixer/Graphics`, and any folders given with `--graphics <dir>`. A graphic is an `*.ograf.json` manifest with its files; a folder may hold several. When two graphics share an id, the later folder in this order wins. Before `load`, the renderer fills in the schema defaults under the data it receives; `GraphicsLayer.data` holds only what was sent. A `load` on a layer that is on air replaces the graphic with a hard cut. On every `hello` the renderer clears both layers.
 
+## OSC
+
+The engine receives OSC on UDP `127.0.0.1:4210` (`--osc 0.0.0.0:4210` for other machines, `--osc off`). Numbers can be in the path or the first argument; extra arguments are ignored (so the intercom's keyword rules, which append their text, work).
+
+| Address | Does |
+|---|---|
+| `/lzvm/cut`, `/lzvm/auto`, `/lzvm/ftb` | as the commands |
+| `/lzvm/preview/<n>`, `/lzvm/program/<n>` (or `… i`) | preview / hard cut |
+| `/lzvm/tbar f` | T-bar 0..1 |
+| `/lzvm/overlay/<i>/on` · `/off` · `/toggle` | overlay in/out |
+| `/lzvm/vfa/on` · `/off` · `/toggle` | video follows audio |
+| `/lzvm/gfx/<l>/play` · `/next` · `/stop` · `/clear` | graphics layer |
+| `/lzvm/gfx/<l>/load s:graphicId [s:json data]` | load a graphic |
+| `/lzvm/gfx/<l>/update s:json` | updateAction |
+| `/lzvm/caption s:text [i:layer]` | Text for live captions: updateAction `{"text": …}` on the given layer, else the layer showing a captions graphic, else layer 2. If no captions graphic is loaded there, `lz-captions` is loaded with the text and played; if it is loaded but not playing, it is played. |
+| `/lzvm/cmd s:json` | any API command |
+
+Feedback goes to every target in `state.osc.targets` (`{ cmd: 'setOscTargets'; targets: string[] }`, "host:port"), only when a value changes: `/lzvm/program i`, `/lzvm/preview i`, `/lzvm/tally/<n> i` (0 off, 1 preview, 2 programme), `/lzvm/ftb i`, `/lzvm/transition i`, `/lzvm/vfa i`, `/lzvm/vfa/speaking s`, `/lzvm/overlay/<i> i`, `/lzvm/gfx/<l>/status s`, `/lzvm/gfx/<l>/onair i`. State gains `osc: { listen: string | null; targets: string[] }`.
+
 ## Source specs
 
 | Spec | Source |
@@ -226,6 +259,7 @@ Companion: `GET /api/gfx/<layer>/play`, `/api/gfx/<layer>/next` (play with delta
 | `srt://host:port?mode=listener` (or `caller`) | H.264/AAC in MPEG-TS over SRT |
 | `rtmp://server/app/key` | H.264/AAC to an RTMP server (YouTube, Restream …) |
 | `record:/path/file.mp4` | Recording, H.264/AAC (`.mov` → ProRes 422 HQ/PCM if available) |
+| `audio:<AudioDevice.id>` | Programme audio to an audio interface, headphones or a virtual device (BlackHole, Dante Virtual Soundcard) — e.g. into the intercom's Program channel or for monitoring |
 
 ## Multiview layout (1280×720)
 

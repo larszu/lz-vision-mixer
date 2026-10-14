@@ -7,6 +7,7 @@ import { MicsPanel } from './components/MicsPanel'
 import { Multiview } from './components/Multiview'
 import { OutputsPanel } from './components/OutputsPanel'
 import { OverlayPanel } from './components/OverlayPanel'
+import { SettingsPanel } from './components/SettingsPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { TransitionPanel } from './components/TransitionPanel'
 import { Icon, Segmented, StatusSign, Tabs } from './components/ui'
@@ -16,8 +17,8 @@ import { getLang, setLang, t } from './i18n'
 import type { State } from './types'
 
 type Theme = 'system' | 'dark' | 'light'
-type Tab = 'graphics' | 'vfa' | 'mics' | 'audio' | 'overlays' | 'outputs'
-const TABS: Tab[] = ['graphics', 'vfa', 'mics', 'audio', 'overlays', 'outputs']
+type Tab = 'graphics' | 'vfa' | 'mics' | 'audio' | 'overlays' | 'outputs' | 'settings'
+const TABS: Tab[] = ['graphics', 'vfa', 'mics', 'audio', 'overlays', 'outputs', 'settings']
 
 function readStored<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
   try {
@@ -194,6 +195,7 @@ export function App() {
     audio: t('Audio'),
     overlays: t('Overlays'),
     outputs: t('Outputs'),
+    settings: t('Settings'),
   }
   const badge = (x: Tab) => {
     if (!state) return null
@@ -256,7 +258,7 @@ export function App() {
             <TransitionPanel state={state} />
             <LiveStrip state={state} openTab={openTab} />
             <section className="secondary">
-              <Tabs label={t('More controls')} value={tab} onChange={openTab} tabs={TABS.map((id) => ({ id, label: tabLabels[id], badge: badge(id) }))} />
+              <Tabs label={t('More controls')} value={tab} onChange={openTab} tabs={TABS.map((id) => ({ id, label: tabLabels[id], badge: badge(id), icon: id === 'settings' ? ('settings' as const) : undefined }))} />
               <div className="tabpanel" role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`}>
                 {tab === 'graphics' && <GraphicsPanel state={state} />}
                 {tab === 'vfa' && <VfaPanel state={state} />}
@@ -264,6 +266,7 @@ export function App() {
                 {tab === 'audio' && <AudioPanel state={state} />}
                 {tab === 'overlays' && <OverlayPanel state={state} />}
                 {tab === 'outputs' && <OutputsPanel state={state} />}
+                {tab === 'settings' && <SettingsPanel state={state} />}
               </div>
             </section>
           </aside>

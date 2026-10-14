@@ -5,7 +5,9 @@
 //! PipeWire alike and hands out a ready source element per device, so there
 //! is no platform code here.
 
+use crate::dsp::StripParams;
 use crate::specs::AUDIO_CAPS;
+use crate::strip_element::LzStrip;
 use crate::state::AudioDevice;
 use anyhow::{anyhow, Context, Result};
 use gstreamer as gst;
@@ -32,8 +34,17 @@ fn channels(dev: &gst::Device) -> u32 {
 }
 
 pub fn list() -> Vec<Found> {
+    list_class("Audio/Source")
+}
+
+/// Audio outputs (interfaces, headphones, virtual devices like BlackHole).
+pub fn list_outputs() -> Vec<Found> {
+    list_class("Audio/Sink")
+}
+
+fn list_class(class: &str) -> Vec<Found> {
     let monitor = gst::DeviceMonitor::new();
-    monitor.add_filter(Some("Audio/Source"), None);
+    monitor.add_filter(Some(class), None);
     if monitor.start().is_err() {
         return Vec::new();
     }
@@ -56,15 +67,14 @@ pub fn list() -> Vec<Found> {
     out
 }
 
-/// Two rows (left, right) that both take `channel` of `inputs` channels.
+/// One row that takes `channel` of `inputs` channels (to mono).
 pub fn pick_matrix(inputs: u32, channel: u32) -> Vec<Vec<f32>> {
-    let row: Vec<f32> = (0..inputs).map(|i| if i == channel { 1.0 } else { 0.0 }).collect();
-    vec![row.clone(), row]
+    vec![(0..inputs).map(|i| if i == channel { 1.0 } else { 0.0 }).collect()]
 }
 
-/// Pipeline: device → force its channel count → pick one channel onto both
-/// sides → mic bus `mic<n>`.
-pub fn mic_pipeline(dev: &Found, channel: u32, mic: usize) -> Result<gst::Pipeline> {
+/// Pipeline: device → force its channel count → pick one channel (mono) →
+/// optional RNNoise → channel strip → both sides → mic bus `mic<n>`.
+pub fn mic_pipeline(dev: &Found, channel: u32, mic: usize, strip: &StripParams) -> Result<gst::Pipeline> {
     let ch = dev.info.channels.max(1);
     if channel >= ch {
         return Err(anyhow!("{} has {} channels; channel {} does not exist", dev.info.name, ch, channel + 1));
@@ -73,7 +83,8 @@ pub fn mic_pipeline(dev: &Found, channel: u32, mic: usize) -> Result<gst::Pipeli
     let src = dev.device.create_element(None).context("device has no source element")?;
     let rest = gst::parse::bin_from_description(
         &format!(
-            "audioconvert ! audio/x-raw,channels={ch} ! audioconvert name=pick ! audioresample ! {AUDIO_CAPS} ! queue ! interaudiosink channel=mic{mic} async=false"
+            "audioconvert ! audio/x-raw,channels={ch} ! audioconvert name=pick ! audioresample ! audio/x-raw,format=F32LE,rate=48000,channels=1,layout=interleaved ! {denoise}lzstrip name=strip ! audioconvert ! {AUDIO_CAPS} ! queue ! interaudiosink channel=mic{mic} async=false",
+            denoise = if strip.denoise { "audiornnoise ! " } else { "" }
         ),
         true,
     )?;
@@ -84,8 +95,24 @@ pub fn mic_pipeline(dev: &Found, channel: u32, mic: usize) -> Result<gst::Pipeli
             .map(|row| gst::Array::new(row.into_iter().map(|v| v.to_send_value())).to_send_value()),
     );
     pick.set_property("mix-matrix", matrix);
+    if let Some(e) = rest.by_name("strip").and_then(|e| e.downcast::<LzStrip>().ok()) {
+        e.set_params(strip.clone());
+    }
     pipeline.add_many([&src, rest.upcast_ref()])?;
     src.link(&rest)?;
+    Ok(pipeline)
+}
+
+/// Programme audio (stereo) to an audio output device.
+pub fn output_pipeline(dev: &Found) -> Result<gst::Pipeline> {
+    let pipeline = gst::Pipeline::new();
+    let head = gst::parse::bin_from_description(
+        &format!("interaudiosrc channel=pgma {} ! {AUDIO_CAPS} ! audioconvert ! audioresample", crate::specs::INTER_AUDIO),
+        true,
+    )?;
+    let sink = dev.device.create_element(None).context("device has no sink element")?;
+    pipeline.add_many([head.upcast_ref(), &sink])?;
+    head.link(&sink)?;
     Ok(pipeline)
 }
 
@@ -95,7 +122,7 @@ mod tests {
 
     #[test]
     fn matrix_picks_one_channel_for_both_sides() {
-        assert_eq!(pick_matrix(4, 2), vec![vec![0.0, 0.0, 1.0, 0.0], vec![0.0, 0.0, 1.0, 0.0]]);
-        assert_eq!(pick_matrix(1, 0), vec![vec![1.0], vec![1.0]]);
+        assert_eq!(pick_matrix(4, 2), vec![vec![0.0, 0.0, 1.0, 0.0]]);
+        assert_eq!(pick_matrix(1, 0), vec![vec![1.0]]);
     }
 }

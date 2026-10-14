@@ -1,5 +1,6 @@
 // Source language is English; German is the first translation.
 import type { Need } from './helpers'
+import type { TargetProblem } from './osc'
 import type { OverlayTransition, TransitionKind } from './types'
 
 const de: Record<string, string> = {
@@ -150,11 +151,71 @@ const de: Record<string, string> = {
   Ch: 'Kanal',
   PGM: 'PGM',
   PVW: 'PVW',
-  'Choose a device first': 'Erst ein Gerät wählen',
   'Mixed into the programme audio. Off: only steers video follows audio.': 'Wird ins Programm-Audio gemischt. Aus: steuert nur „Video folgt Audio“.',
   'Look for audio devices again': 'Audiogeräte neu suchen',
   'Refresh devices': 'Geräte neu suchen',
   'No audio devices found. Connect an interface and refresh.': 'Keine Audiogeräte gefunden. Interface anschließen und neu suchen.',
+  'Channel strip': 'Kanalzug',
+  'No processing': 'Ohne Bearbeitung',
+  Delay: 'Verzögerung',
+  'Lip-sync delay, 0 to 500 ms': 'Verzögerung für Lippensynchronität, 0 bis 500 ms',
+  'Delay per input: lip sync, 0 to 500 ms.': 'Verzögerung je Eingang: für Lippensynchronität, 0 bis 500 ms.',
+  'Speech (podcast)': 'Sprache (Podcast)',
+  Denoise: 'Entrauschen',
+  'Switching restarts the mic briefly': 'Umschalten startet das Mikro kurz neu',
+  'High-pass': 'Hochpass',
+  Frequency: 'Frequenz',
+  'Cuts rumble and handling noise below this frequency': 'Schneidet Rumpeln und Griffgeräusche unter dieser Frequenz ab',
+  Gate: 'Gate',
+  Compressor: 'Kompressor',
+  Range: 'Absenkung',
+  Ratio: 'Verhältnis',
+  Release: 'Rückstellzeit',
+  Makeup: 'Aufholverstärkung',
+  'Below this level the gate closes': 'Unter diesem Pegel schließt das Gate',
+  'How much the closed gate lowers the level': 'So weit senkt das geschlossene Gate den Pegel ab',
+  'Above this level the compressor works': 'Über diesem Pegel arbeitet der Kompressor',
+  'Gain after the compressor': 'Verstärkung nach dem Kompressor',
+
+  // Audio outputs
+  'Audio interface': 'Audio-Interface',
+  'Programme audio to an interface, headphones or a virtual device.': 'Programm-Audio auf ein Interface, einen Kopfhörer oder ein virtuelles Gerät.',
+  'No audio outputs found.': 'Keine Audio-Ausgänge gefunden.',
+  'already an output': 'schon ein Ausgang',
+  'in use': 'belegt',
+
+  // Settings, OSC
+  Settings: 'Einstellungen',
+  'Receives on': 'Empfängt auf',
+  'The engine sets this at start (--osc host:port, or off).': 'Legt die Engine beim Start fest (--osc host:port oder off).',
+  'Feedback targets': 'Rückmeldeziele',
+  'Feedback target': 'Rückmeldeziel',
+  'Tally, programme, preview and more go to these addresses when they change.': 'Tally, Programm, Vorschau und mehr gehen bei jeder Änderung an diese Adressen.',
+  'New target': 'Neues Ziel',
+  'OSC addresses': 'OSC-Adressen',
+  'Numbers can be in the path or the first argument.': 'Zahlen können im Pfad oder im ersten Argument stehen.',
+  'The mixer receives': 'Der Mischer empfängt',
+  'The mixer sends': 'Der Mischer sendet',
+  'Enter host:port': 'host:port eingeben',
+  'Use host:port, e.g. 192.168.1.20:9000': 'Als host:port angeben, z. B. 192.168.1.20:9000',
+  'Not a valid host name or IP address': 'Kein gültiger Hostname und keine gültige IP-Adresse',
+  'Port must be 1 to 65535': 'Port muss zwischen 1 und 65535 liegen',
+  'This target is already in the list': 'Dieses Ziel steht schon in der Liste',
+  'Cut, auto transition, fade to black': 'Cut, Auto-Übergang, Abblende auf Schwarz',
+  'Input to preview / hard cut to programme': 'Eingang auf Vorschau / hart auf Programm',
+  'T-bar 0..1': 'T-Bar 0..1',
+  'Overlay in or out': 'Overlay ein oder aus',
+  'Graphics layer': 'Grafikebene',
+  'Load a graphic, optionally with data': 'Grafik laden, wahlweise mit Daten',
+  'Update the graphic on the layer': 'Grafik auf der Ebene aktualisieren',
+  'Text for the captions graphic': 'Text für die Untertitel-Grafik',
+  'Any API command': 'Beliebiger API-Befehl',
+  'Input on programme / preview': 'Eingang auf Programm / Vorschau',
+  '0 off, 1 preview, 2 programme': '0 aus, 1 Vorschau, 2 Programm',
+  'Fade to black, transition running': 'Abblende auf Schwarz, Übergang läuft',
+  'Video follows audio and who speaks': 'Video folgt Audio und wer spricht',
+  'Overlay on air': 'Overlay on air',
+  'Graphics layer state': 'Zustand der Grafikebene',
 
   // Video follows audio
   'Video follows audio': 'Video folgt Audio',
@@ -286,5 +347,20 @@ export function needLabel(need: Need | undefined): string {
       return t('Needs a video encoder, none available on this engine')
     default:
       return ''
+  }
+}
+
+export function oscProblemLabel(p: TargetProblem): string {
+  switch (p) {
+    case 'empty':
+      return t('Enter host:port')
+    case 'format':
+      return t('Use host:port, e.g. 192.168.1.20:9000')
+    case 'host':
+      return t('Not a valid host name or IP address')
+    case 'port':
+      return t('Port must be 1 to 65535')
+    case 'duplicate':
+      return t('This target is already in the list')
   }
 }

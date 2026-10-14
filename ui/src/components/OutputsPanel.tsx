@@ -1,9 +1,9 @@
 import { useRef, useState } from 'react'
 import { send } from '../client'
-import { OUTPUT_PRESETS, needMet, specNeed } from '../helpers'
+import { OUTPUT_PRESETS, audioOutputSpec, needMet, specNeed } from '../helpers'
 import { needLabel, t } from '../i18n'
 import type { Output, State } from '../types'
-import { Panel, StatusSign } from './ui'
+import { Icon, Panel, StatusSign } from './ui'
 
 function outputStatus(o: Output) {
   if (o.status === 'running') return { tone: 'ok' as const, label: t('Running') }
@@ -87,6 +87,41 @@ export function OutputsPanel({ state }: { state: State }) {
             </button>
           )
         })}
+      </div>
+      <div className="audio-outs">
+        <div className="audio-outs-head">
+          <h3 className="section-title">{t('Audio interface')}</h3>
+          <button type="button" className="btn btn-sm btn-ghost push-end" onClick={() => send({ cmd: 'refreshDevices' })} title={t('Look for audio devices again')}>
+            <Icon name="refresh" size={16} />
+            {t('Refresh devices')}
+          </button>
+        </div>
+        <p className="hint">{t('Programme audio to an interface, headphones or a virtual device.')}</p>
+        {state.audioOutputs.length === 0 ? (
+          <p className="hint">{t('No audio outputs found.')}</p>
+        ) : (
+          <div className="presets" role="group" aria-label={t('Audio interface')}>
+            {state.audioOutputs.map((d) => {
+              const p = audioOutputSpec(d.id)
+              const used = state.outputs.some((o) => o.spec === p)
+              return (
+                <button
+                  key={d.id}
+                  type="button"
+                  className={`chip ${spec === p ? 'selected' : ''}`}
+                  title={used ? `${p} (${t('already an output')})` : p}
+                  onClick={() => {
+                    setSpec(p)
+                    input.current?.focus()
+                  }}
+                >
+                  {d.name}
+                  {used && <span className="chip-note">· {t('in use')}</span>}
+                </button>
+              )
+            })}
+          </div>
+        )}
       </div>
     </Panel>
   )

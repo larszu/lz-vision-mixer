@@ -16,7 +16,7 @@ use crate::format::Format;
 use crate::layout::{self, Pad};
 use crate::runner::{Event, Runner};
 use crate::devices;
-use crate::specs::{self, AUDIO_CAPS, VIDEO_FORMAT};
+use crate::specs::{self, AUDIO_CAPS, INTER_AUDIO, VIDEO_FORMAT};
 use crate::vfa::Vfa;
 use crate::state::*;
 use anyhow::{anyhow, bail, Context, Result};
@@ -40,6 +40,7 @@ const Z_COMING: u32 = 11;
 const Z_OVERLAY: u32 = 40;
 const Z_FTB: u32 = 90;
 const GFX_FTB: usize = 9;
+const MAX_DELAY_MS: u32 = 500;
 const TICK: Duration = Duration::from_millis(4);
 const RETRY: Duration = Duration::from_secs(3);
 
@@ -83,11 +84,13 @@ struct Core {
     next_output: u64,
     mics: Vec<MicRt>,
     devices: Vec<devices::Found>,
+    out_devices: Vec<devices::Found>,
     vfa: Vfa,
     gfx: Vec<GraphicsLayer>,
     library: Vec<GraphicInfo>,
     renderer: Option<(u64, mpsc::UnboundedSender<String>)>,
     renderer_epoch: u64,
+    osc_targets: Vec<String>,
 }
 
 struct MicRt {
@@ -109,6 +112,8 @@ struct Saved {
     mics: Vec<Mic>,
     #[serde(default)]
     vfa: Option<crate::vfa::VfaConfig>,
+    #[serde(default)]
+    osc_targets: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -130,6 +135,7 @@ pub struct Mixer {
     gfx_seen: [Arc<AtomicBool>; GFX_LAYERS],
     gfx_runners: Mutex<Vec<Option<Runner>>>,
     pub frame_ports: Vec<u16>,
+    pub osc_listen: Mutex<Option<String>>,
     caps: Capabilities,
     config: Option<PathBuf>,
     pub changed: watch::Sender<u64>,
@@ -193,7 +199,7 @@ fn main_launch(f: &Format) -> String {
              t{n}. ! {leaky} ! pgm.sink_{o2} \
              t{n}. ! {leaky} ! {mv_rate} ! mv.sink_{n} \
              t{n}. ! {leaky} ! {mv_rate} ! mv.sink_{pv} \
-             interaudiosrc channel=ain{n} ! {AUDIO_CAPS} ! level name=pre{n} {lvl} ! volume name=vol{n} ! level name=lvl{n} {lvl} ! queue ! amix.sink_{n} ",
+             interaudiosrc channel=ain{n} {INTER_AUDIO} ! {AUDIO_CAPS} ! level name=pre{n} {lvl} ! volume name=vol{n} ! level name=lvl{n} {lvl} ! queue ! amix.sink_{n} ",
             o1 = 20 + n,
             o2 = 30 + n,
             pv = 10 + n,
@@ -201,7 +207,7 @@ fn main_launch(f: &Format) -> String {
     }
     for m in 1..=MICS {
         s.push_str(&format!(
-            "interaudiosrc channel=mic{m} ! {AUDIO_CAPS} ! level name=micpre{m} {lvl} ! volume name=micvol{m} volume=0 ! level name=miclvl{m} {lvl} ! queue ! amix.sink_{a} ",
+            "interaudiosrc channel=mic{m} {INTER_AUDIO} ! {AUDIO_CAPS} ! level name=micpre{m} {lvl} ! volume name=micvol{m} volume=0 ! level name=miclvl{m} {lvl} ! queue ! amix.sink_{a} ",
             a = 20 + m
         ));
     }
@@ -290,12 +296,15 @@ impl Mixer {
                         volume: 1.0,
                         muted: false,
                         in_program: true,
+                        delay_ms: 0,
+                        strip: Default::default(),
                     },
                     runner: None,
                     epoch: 0,
                 })
                 .collect(),
             devices: devices::list(),
+            out_devices: devices::list_outputs(),
             vfa: Vfa::default(),
             gfx: (1..=GFX_LAYERS)
                 .map(|l| GraphicsLayer {
@@ -310,6 +319,7 @@ impl Mixer {
             library: Vec::new(),
             renderer: None,
             renderer_epoch: 0,
+            osc_targets: Vec::new(),
         };
         let (changed, _) = watch::channel(0u64);
         let (levels, _) = watch::channel(Levels { slots: BTreeMap::new(), master: [-90.0, -90.0], mics: BTreeMap::new(), speech: BTreeMap::new() });
@@ -324,6 +334,7 @@ impl Mixer {
             gfx_seen: std::array::from_fn(|_| Arc::new(AtomicBool::new(false))),
             gfx_runners: Mutex::new((0..GFX_LAYERS).map(|_| None).collect()),
             frame_ports: (0..GFX_LAYERS as u16).map(|i| frame_port + i).collect(),
+            osc_listen: Mutex::new(None),
             caps,
             config,
             changed,
@@ -487,6 +498,7 @@ impl Mixer {
             master: c.master.clone(),
             capabilities: self.caps.clone(),
             audio_devices: c.devices.iter().map(|d| d.info.clone()).collect(),
+            audio_outputs: c.out_devices.iter().map(|d| d.info.clone()).collect(),
             mics: c.mics.iter().map(|m| m.info.clone()).collect(),
             vfa: VfaState { config: c.vfa.cfg.clone(), speaking: c.vfa.speaking() },
             graphics: Graphics {
@@ -494,6 +506,7 @@ impl Mixer {
                 library: c.library.clone(),
                 layers: c.gfx.clone(),
             },
+            osc: OscState { listen: self.osc_listen.lock().unwrap().clone(), targets: c.osc_targets.clone() },
         }
     }
 
@@ -598,7 +611,7 @@ impl Mixer {
                 self.apply_overlay(&snapshot);
             }
             Command::OverlayOn { index, on } => self.overlay_on(overlay_idx(index)?, on),
-            Command::Audio { slot, volume, muted, afv } => {
+            Command::Audio { slot, volume, muted, afv, delay_ms } => {
                 let i = slot_idx(slot)?;
                 let mut c = self.core.lock().unwrap();
                 let a = &mut c.slots[i].info.audio;
@@ -611,7 +624,11 @@ impl Mixer {
                 if let Some(f) = afv {
                     a.afv = f;
                 }
+                if let Some(d) = delay_ms {
+                    a.delay_ms = d.min(MAX_DELAY_MS);
+                }
                 self.apply_audio(&c);
+                self.apply_delays(&c);
             }
             Command::Master { volume, muted } => {
                 let mut c = self.core.lock().unwrap();
@@ -631,7 +648,8 @@ impl Mixer {
                 let i = mic_idx(mic)?;
                 self.core.lock().unwrap().mics[i].info.name = name;
             }
-            Command::MicAudio { mic, volume, muted, in_program } => {
+            Command::MicStrip { mic, strip } => self.mic_strip(mic, strip)?,
+            Command::MicAudio { mic, volume, muted, in_program, delay_ms } => {
                 let i = mic_idx(mic)?;
                 let mut c = self.core.lock().unwrap();
                 let m = &mut c.mics[i].info;
@@ -644,11 +662,17 @@ impl Mixer {
                 if let Some(x) = in_program {
                     m.in_program = x;
                 }
+                if let Some(d) = delay_ms {
+                    m.delay_ms = d.min(MAX_DELAY_MS);
+                }
                 self.apply_audio(&c);
+                self.apply_delays(&c);
             }
             Command::RefreshDevices => {
-                let found = devices::list();
-                self.core.lock().unwrap().devices = found;
+                let (found, outs) = (devices::list(), devices::list_outputs());
+                let mut c = self.core.lock().unwrap();
+                c.devices = found;
+                c.out_devices = outs;
             }
             Command::SetVfa {
                 enabled,
@@ -776,6 +800,20 @@ impl Mixer {
                 l.error = None;
             }
             Command::GfxRescan => self.to_renderer(serde_json::json!({"type":"rescan"}))?,
+            Command::SetOscTargets { targets } => {
+                let mut clean = Vec::new();
+                for t in targets {
+                    let t = t.trim().to_string();
+                    let ok = t.rsplit_once(':').is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok());
+                    if !ok {
+                        bail!("OSC target must be host:port, got '{t}'");
+                    }
+                    if !clean.contains(&t) {
+                        clean.push(t);
+                    }
+                }
+                self.core.lock().unwrap().osc_targets = clean;
+            }
         }
         self.notify();
         if persist {
@@ -1083,7 +1121,23 @@ impl Mixer {
     }
 
     fn add_output(&self, spec: String) -> Result<()> {
-        let plan = specs::output(&spec, &self.format, has)?;
+        // Audio devices are built from the device monitor, not a launch line.
+        let device_pipeline = match spec.strip_prefix("audio:") {
+            Some(id) => {
+                let c = self.core.lock().unwrap();
+                let dev = c
+                    .out_devices
+                    .iter()
+                    .find(|d| d.info.id == id)
+                    .ok_or_else(|| anyhow!("audio output '{id}' not found"))?;
+                Some(devices::output_pipeline(dev)?)
+            }
+            None => None,
+        };
+        let plan = match device_pipeline {
+            Some(_) => specs::OutputPlan { launch: String::new(), needs_eos: false },
+            None => specs::output(&spec, &self.format, has)?,
+        };
         let id = {
             let mut c = self.core.lock().unwrap();
             let id = format!("o{}", c.next_output);
@@ -1096,7 +1150,7 @@ impl Mixer {
         };
         let me = self.me.clone();
         let id2 = id.clone();
-        let r = Runner::start(&plan.launch, false, plan.needs_eos, move |ev| {
+        let on_event = move |ev| {
             let Some(m) = me.upgrade() else { return };
             {
                 let mut c = m.core.lock().unwrap();
@@ -1118,7 +1172,11 @@ impl Mixer {
                 }
             }
             m.notify();
-        });
+        };
+        let r = match device_pipeline {
+            Some(p) => Runner::start_pipeline(p, false, false, on_event),
+            None => Runner::start(&plan.launch, false, plan.needs_eos, on_event),
+        };
         let mut c = self.core.lock().unwrap();
         let o = c.outputs.iter_mut().find(|o| o.out.id == id).unwrap();
         match r {
@@ -1266,6 +1324,7 @@ impl Mixer {
                 preview: c.preview,
                 mics: c.mics.iter().map(|m| m.info.clone()).collect(),
                 vfa: Some(c.vfa.cfg.clone()),
+                osc_targets: c.osc_targets.clone(),
             }
         };
         let Ok(json) = serde_json::to_vec_pretty(&saved) else { return };
@@ -1321,11 +1380,13 @@ impl Mixer {
                 // Never come back cutting on its own: the operator switches it on.
                 c.vfa = Vfa::new(crate::vfa::VfaConfig { enabled: false, ..v });
             }
+            c.osc_targets = saved.osc_targets;
             c.program = saved.program.filter(|n| (1..=SLOTS).contains(n));
             c.preview = saved.preview.filter(|n| (1..=SLOTS).contains(n));
             self.apply_program(&c);
             self.apply_preview(&c);
             self.apply_audio(&c);
+            self.apply_delays(&c);
         }
         for (slot, spec) in start {
             let name = self.core.lock().unwrap().slots[slot - 1].info.name.clone();
@@ -1385,7 +1446,7 @@ impl Mixer {
             c.devices = devices::list();
         }
         let built = match c.devices.iter().find(|d| d.info.id == dev) {
-            Some(d) => devices::mic_pipeline(d, ch, mic),
+            Some(d) => devices::mic_pipeline(d, ch, mic, &c.mics[i].info.strip),
             None => Err(anyhow!("audio device '{dev}' not found")),
         };
         let me = self.me.clone();
@@ -1425,6 +1486,58 @@ impl Mixer {
             }
         }
         Ok(())
+    }
+
+    /// Merges partial strip settings. Denoising changes the pipeline and
+    /// restarts the mic; everything else is changed while it runs.
+    fn mic_strip(&self, mic: usize, patch: serde_json::Value) -> Result<()> {
+        let i = mic_idx(mic)?;
+        let (restart, device) = {
+            let mut c = self.core.lock().unwrap();
+            let m = &mut c.mics[i];
+            let mut v = serde_json::to_value(&m.info.strip)?;
+            if let (Some(obj), Some(p)) = (v.as_object_mut(), patch.as_object()) {
+                for (k, x) in p {
+                    obj.insert(k.clone(), x.clone());
+                }
+            }
+            let new: crate::dsp::StripParams = serde_json::from_value(v).map_err(|e| anyhow!("strip: {e}"))?;
+            let new = new.clamped();
+            let restart = new.denoise != m.info.strip.denoise;
+            m.info.strip = new.clone();
+            if !restart {
+                if let Some(e) = m
+                    .runner
+                    .as_ref()
+                    .and_then(|r| r.pipeline.by_name("strip"))
+                    .and_then(|e| e.downcast::<crate::strip_element::LzStrip>().ok())
+                {
+                    e.set_params(new);
+                }
+            }
+            (restart, m.info.device.clone().map(|d| (d, m.info.channel)))
+        };
+        if restart && device.is_some() {
+            self.set_mic(mic, device, None)?;
+        }
+        Ok(())
+    }
+
+    /// Lip-sync delay per source: the mixer pad shifts the running time of
+    /// that source; the queue in front of it holds the extra audio.
+    fn apply_delays(&self, c: &Core) {
+        let Some(amix) = self.main.by_name("amix") else { return };
+        let ns = |ms: u32| ms as i64 * 1_000_000;
+        for s in &c.slots {
+            if let Some(p) = amix.static_pad(&format!("sink_{}", s.info.slot)) {
+                p.set_offset(ns(s.info.audio.delay_ms));
+            }
+        }
+        for m in &c.mics {
+            if let Some(p) = amix.static_pad(&format!("sink_{}", 20 + m.info.mic)) {
+                p.set_offset(ns(m.info.delay_ms));
+            }
+        }
     }
 
     // ── video follows audio ─────────────────────────────────────────────

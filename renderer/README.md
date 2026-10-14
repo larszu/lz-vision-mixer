@@ -37,6 +37,7 @@ Bundled, in the Lars Zumpe Medienproduktion design (Public Sans shipped locally,
 | `lz-lower-third` | Name and function, optional third line. Plate (navy, tally edge) or open (line, tally dot) | `name`, `title`, `extra`, `position` left/right, `accentDot`, `style` plate/open |
 | `lz-bug` | Corner label, optionally with the lz monogram or a tally square for LIVE | `text`, `corner`, `tally`, `monogram`, `plate` |
 | `lz-title` | Title card inside the title-safe area | `kicker`, `headline`, `subline`, `backdrop` plate/full/none |
+| `lz-captions` | Live captions: up to two lines in the title-safe area, last two lines of long text, short cross-fade (growing text updates in place), auto-hide after `autoHideS` without new text. Fed by `updateAction {"text"}`, e.g. the engine's OSC `/lzvm/caption` | `text`, `speaker`, `autoHideS` (0 = never), `position` bottom/top |
 | `lz-lyrics` | Song lyrics from [lz-presenter](https://github.com/larszu/lz-presenter), one slide per step | see its manifest |
 
 All of them take `updateAction` while on air (text cross-fades, the plate resizes; a change of position, style or backdrop goes out and in again) and honour `skipAnimation`.

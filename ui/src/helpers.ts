@@ -1,5 +1,6 @@
 // Pure helpers: no DOM, no React, so they can be unit-tested in Node.
-import type { Capabilities, Command, GraphicInfo, GraphicsLayer, Levels, Rect, State } from './types'
+import { STRIP_NEUTRAL } from './strip'
+import type { Capabilities, Command, GraphicInfo, GraphicsLayer, Levels, Mic, Rect, State } from './types'
 import { VFA_DEFAULTS } from './vfa'
 
 /* ---------- Multiview layout (docs/api.md, 1280x720) ---------- */
@@ -159,28 +160,32 @@ export function gfxHasNext(layer: GraphicsLayer, info: GraphicInfo | undefined):
 /** Fills the parts of State an older engine does not send yet, so the UI never crashes on them. */
 export function normalizeState(raw: State): State {
   const s = raw as Partial<State> & State
+  const mics =
+    s.mics ??
+    Array.from({ length: 8 }, (_, i) => ({
+      mic: i + 1,
+      name: '',
+      device: null,
+      channel: 0,
+      status: 'empty' as const,
+      error: null,
+      volume: 1,
+      muted: false,
+      inProgram: true,
+    }))
   return {
     ...s,
+    slots: (s.slots ?? []).map((x) => ({ ...x, audio: { ...x.audio, delayMs: x.audio?.delayMs ?? 0 } })),
     audioDevices: s.audioDevices ?? [],
-    mics:
-      s.mics ??
-      Array.from({ length: 8 }, (_, i) => ({
-        mic: i + 1,
-        name: '',
-        device: null,
-        channel: 0,
-        status: 'empty' as const,
-        error: null,
-        volume: 1,
-        muted: false,
-        inProgram: true,
-      })),
+    audioOutputs: s.audioOutputs ?? [],
+    mics: mics.map((m) => ({ ...m, delayMs: (m as Partial<Mic>).delayMs ?? 0, strip: { ...STRIP_NEUTRAL, ...(m as Partial<Mic>).strip } })),
     vfa: s.vfa ?? { ...VFA_DEFAULTS, enabled: false, rules: [], wideSlot: null, transition: 'cut', speaking: null },
     graphics: s.graphics ?? {
       rendererConnected: false,
       library: [],
       layers: [1, 2].map((layer) => ({ layer, graphicId: null, data: {}, status: 'empty' as const, step: 0, error: null })),
     },
+    osc: s.osc ?? { listen: null, targets: [] },
   }
 }
 
@@ -224,6 +229,9 @@ export const OUTPUT_PRESETS: SpecPreset[] = [
   { label: 'RTMP stream', spec: 'rtmp://a.rtmp.youtube.com/live2/', need: 'encoder', partial: true },
   { label: 'Recording', spec: 'record:/tmp/lz-vision-mixer.mp4', need: 'encoder' },
 ]
+
+/** Output spec for an audio device (docs/api.md, Output specs). */
+export const audioOutputSpec = (deviceId: string) => `audio:${deviceId}`
 
 export function needMet(need: Need | undefined, caps: Capabilities | undefined): boolean {
   if (!need || !caps) return true

@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react'
 import { send, useLevels } from '../client'
 import { formatDb } from '../helpers'
 import { t } from '../i18n'
+import { clampDelay, DELAY_MAX_MS, stripSummary } from '../strip'
 import type { AudioDevice, Mic, State } from '../types'
-import { Fader, Icon, Meter, Panel, StatusSign } from './ui'
+import { StripEditor } from './StripEditor'
+import { Fader, Icon, Meter, NumberField, Panel, StatusSign } from './ui'
 
 export function micStatus(m: Mic) {
   switch (m.status) {
@@ -21,7 +23,7 @@ export function micStatus(m: Mic) {
 /** Name of a mic for lists: its own name, else "Mic N". */
 export const micLabel = (m: Mic | undefined, n: number) => (m?.name ? `${t('Mic')} ${n} · ${m.name}` : `${t('Mic')} ${n}`)
 
-function MicRow({ m, devices, peak }: { m: Mic; devices: AudioDevice[]; peak: number | undefined }) {
+function MicRow({ m, devices, peak, open, onToggle }: { m: Mic; devices: AudioDevice[]; peak: number | undefined; open: boolean; onToggle: () => void }) {
   const [name, setName] = useState(m.name)
   useEffect(() => setName(m.name), [m.name])
   const dev = devices.find((d) => d.id === m.device)
@@ -35,9 +37,11 @@ function MicRow({ m, devices, peak }: { m: Mic; devices: AudioDevice[]; peak: nu
   }
   const commitName = () => {
     const n = name.trim()
-    if (n === m.name || !m.device) return
-    send({ cmd: 'setMic', mic: m.mic, device: m.device, channel: m.channel, name: n })
+    if (n === m.name) return
+    send({ cmd: 'renameMic', mic: m.mic, name: n })
   }
+  const summary = stripSummary(m.strip)
+  const panelId = `strip-${m.mic}`
 
   return (
     <div className={`mic-row ${m.muted ? 'muted' : ''} ${used ? '' : 'unused'}`}>
@@ -52,8 +56,6 @@ function MicRow({ m, devices, peak }: { m: Mic; devices: AudioDevice[]; peak: nu
           <input
             value={name}
             placeholder={`${t('Mic')} ${m.mic}`}
-            disabled={!used}
-            title={used ? undefined : t('Choose a device first')}
             onChange={(e) => setName(e.target.value)}
             onBlur={commitName}
             onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
@@ -111,6 +113,27 @@ function MicRow({ m, devices, peak }: { m: Mic; devices: AudioDevice[]; peak: nu
           {t('PGM')}
         </button>
       </div>
+      <div className="mic-strip-bar">
+        <button type="button" className={`btn btn-sm btn-ghost strip-toggle ${open ? 'open' : ''}`} aria-expanded={open} aria-controls={panelId} onClick={onToggle}>
+          <Icon name="chevron" size={16} />
+          {t('Channel strip')}
+        </button>
+        <span className="strip-summary" title={summary.map((x) => t(x)).join(' · ')}>
+          {summary.length ? summary.map((x) => t(x)).join(' · ') : t('No processing')}
+        </span>
+        <NumberField
+          className="field-delay"
+          label={t('Delay')}
+          title={t('Lip-sync delay, 0 to 500 ms')}
+          unit="ms"
+          min={0}
+          max={DELAY_MAX_MS}
+          step={1}
+          value={m.delayMs}
+          onCommit={(v) => send({ cmd: 'micAudio', mic: m.mic, delayMs: clampDelay(v) })}
+        />
+      </div>
+      {open && <StripEditor id={panelId} m={m} />}
       {(m.status !== 'running' || m.error) && used && (
         <div className="mic-status">
           <StatusSign tone={st.tone} label={st.label} />
@@ -123,6 +146,7 @@ function MicRow({ m, devices, peak }: { m: Mic; devices: AudioDevice[]; peak: nu
 
 export function MicsPanel({ state }: { state: State }) {
   const levels = useLevels()
+  const [open, setOpen] = useState<number | null>(null)
   const devices = state.audioDevices
   return (
     <Panel
@@ -138,7 +162,14 @@ export function MicsPanel({ state }: { state: State }) {
       {devices.length === 0 && <p className="hint">{t('No audio devices found. Connect an interface and refresh.')}</p>}
       <div className="mic-list">
         {state.mics.map((m) => (
-          <MicRow key={m.mic} m={m} devices={devices} peak={levels?.mics[m.mic]} />
+          <MicRow
+            key={m.mic}
+            m={m}
+            devices={devices}
+            peak={levels?.mics[m.mic]}
+            open={open === m.mic}
+            onToggle={() => setOpen(open === m.mic ? null : m.mic)}
+          />
         ))}
       </div>
     </Panel>
