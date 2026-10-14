@@ -27,6 +27,7 @@ pub fn router(mixer: Shared) -> Router {
         .route("/ws", get(ws))
         .route("/api/state", get(|State(m): State<Shared>| async move { Json(m.state()) }))
         .route("/api/cmd", post(cmd))
+        .route("/api/perf", get(|State(m): State<Shared>| async move { Json(m.perf.borrow().clone()) }))
         .route("/api/cut", get(|s| shortcut(s, json!({"cmd":"cut"}))))
         .route("/api/auto", get(|s| shortcut(s, json!({"cmd":"auto"}))))
         .route("/api/ftb", get(|s| shortcut(s, json!({"cmd":"ftb"}))))
@@ -40,6 +41,7 @@ pub fn router(mixer: Shared) -> Router {
         .route("/api/gfx/{layer}/play", get(|s, Path(l): Path<usize>| shortcut(s, json!({"cmd":"gfxPlay","layer":l}))))
         .route("/api/gfx/{layer}/next", get(|s, Path(l): Path<usize>| shortcut(s, json!({"cmd":"gfxPlay","layer":l,"delta":1}))))
         .route("/api/gfx/{layer}/stop", get(|s, Path(l): Path<usize>| shortcut(s, json!({"cmd":"gfxStop","layer":l}))))
+        .route("/api/pick", post(pick))
         .route("/renderer", get(renderer_ws))
         .route("/mjpeg/multiview", get(mjpeg))
         .fallback(static_ui)
@@ -71,6 +73,20 @@ async fn shortcut(State(m): State<Shared>, v: serde_json::Value) -> Response {
 async fn overlay_toggle(State(m): State<Shared>, Path(i): Path<usize>) -> Response {
     let on = m.state().overlays.get(i.wrapping_sub(1)).map(|o| !o.on_air).unwrap_or(true);
     shortcut(State(m), json!({"cmd":"overlayOn","index":i,"on":on})).await
+}
+
+/// Opens a file or folder dialog on the engine's machine and returns the path.
+async fn pick(Json(v): Json<serde_json::Value>) -> Response {
+    let kind: crate::picker::PickKind = match serde_json::from_value(v.get("kind").cloned().unwrap_or_default()) {
+        Ok(k) => k,
+        Err(e) => return reply(Err(format!("kind: {e}"))),
+    };
+    match tokio::task::spawn_blocking(move || crate::picker::pick(kind)).await {
+        Ok(Ok(Some(path))) => Json(json!({"path": path})).into_response(),
+        Ok(Ok(None)) => Json(json!({"cancelled": true})).into_response(),
+        Ok(Err(e)) => reply(Err(format!("{e:#}"))),
+        Err(e) => reply(Err(e.to_string())),
+    }
 }
 
 async fn vfa_toggle(State(m): State<Shared>) -> Response {
@@ -109,6 +125,7 @@ async fn client(socket: WebSocket, m: Shared) {
     let (mut tx, mut rx) = socket.split();
     let mut changed = m.changed.subscribe();
     let mut levels = m.levels.subscribe();
+    let mut perf = m.perf.subscribe();
     let (err_tx, mut err_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let send_state = |m: &Mixer| json!({"type":"state","state": m.state()}).to_string();
     if tx.send(Message::Text(send_state(&m).into())).await.is_err() {
@@ -135,6 +152,11 @@ async fn client(socket: WebSocket, m: Shared) {
                 if r.is_err() { break }
                 let l = levels.borrow_and_update().clone();
                 json!({"type":"levels","levels": l}).to_string()
+            }
+            r = perf.changed() => {
+                if r.is_err() { break }
+                let p = perf.borrow_and_update().clone();
+                json!({"type":"perf","perf": p}).to_string()
             }
             e = err_rx.recv() => match e { Some(e) => json!({"type":"error","message": e}).to_string(), None => break },
         };

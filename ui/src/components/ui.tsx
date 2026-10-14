@@ -49,6 +49,11 @@ const ICONS = {
     'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z',
   ],
   chevron: ['m6 9 6 6 6-6'],
+  trash: ['M3 6h18', 'M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6', 'M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2'],
+  folder: [
+    'm6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2',
+  ],
+  activity: ['M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2'],
   keyboard: ['M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z', 'M6 9h.01', 'M10 9h.01', 'M14 9h.01', 'M18 9h.01', 'M8 13h.01', 'M12 13h.01', 'M16 13h.01', 'M7 16h10'],
 } as const
 
@@ -305,6 +310,55 @@ export function Fader({ volume, label, onVolume, horizontal }: { volume: number;
         onVolume(1)
       }}
     />
+  )
+}
+
+/* ---------- Dialogs ---------- */
+
+/**
+ * Small modal confirm for destructive actions (never window.confirm).
+ * Cancel has the focus, so Enter or Space does not remove by accident.
+ */
+export function ConfirmDialog({
+  title,
+  children,
+  confirmLabel,
+  onConfirm,
+  onClose,
+}: {
+  title: string
+  children: ReactNode
+  confirmLabel: string
+  onConfirm: () => void
+  onClose: () => void
+}) {
+  const ref = useRef<HTMLDialogElement>(null)
+  useEffect(() => {
+    ref.current?.showModal()
+  }, [])
+  return (
+    <dialog ref={ref} className="dialog dialog-narrow" onClose={onClose} aria-labelledby="confirm-title" onClick={(e) => e.target === ref.current && ref.current.close()}>
+      <h2 className="dialog-title" id="confirm-title">
+        {title}
+      </h2>
+      <div className="confirm-body">{children}</div>
+      <footer className="dialog-actions">
+        <span className="spacer" />
+        <button type="button" className="btn" onClick={() => ref.current?.close()} autoFocus>
+          {t('Cancel')}
+        </button>
+        <button
+          type="button"
+          className="btn btn-danger-solid"
+          onClick={() => {
+            onConfirm()
+            ref.current?.close()
+          }}
+        >
+          {confirmLabel}
+        </button>
+      </footer>
+    </dialog>
   )
 }
 

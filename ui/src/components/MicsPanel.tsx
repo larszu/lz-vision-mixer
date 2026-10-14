@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { send, useLevels } from '../client'
+import { send, useLevels, usePerf } from '../client'
 import { formatDb } from '../helpers'
 import { t } from '../i18n'
 import { clampDelay, DELAY_MAX_MS, stripSummary } from '../strip'
 import type { AudioDevice, Mic, State } from '../types'
 import { StripEditor } from './StripEditor'
-import { Fader, Icon, Meter, NumberField, Panel, StatusSign } from './ui'
+import { roomShort } from '../perf'
+import { ConfirmDialog, Fader, Icon, Meter, NumberField, Panel, StatusSign } from './ui'
 
 export function micStatus(m: Mic) {
   switch (m.status) {
@@ -23,7 +24,7 @@ export function micStatus(m: Mic) {
 /** Name of a mic for lists: its own name, else "Mic N". */
 export const micLabel = (m: Mic | undefined, n: number) => (m?.name ? `${t('Mic')} ${n} · ${m.name}` : `${t('Mic')} ${n}`)
 
-function MicRow({ m, devices, peak, open, onToggle }: { m: Mic; devices: AudioDevice[]; peak: number | undefined; open: boolean; onToggle: () => void }) {
+function MicRow({ m, devices, peak, open, onToggle, onRemove }: { m: Mic; devices: AudioDevice[]; peak: number | undefined; open: boolean; onToggle: () => void; onRemove: () => void }) {
   const [name, setName] = useState(m.name)
   useEffect(() => setName(m.name), [m.name])
   const dev = devices.find((d) => d.id === m.device)
@@ -88,6 +89,9 @@ function MicRow({ m, devices, peak, open, onToggle }: { m: Mic; devices: AudioDe
             ))}
           </select>
         </label>
+        <button type="button" className="btn btn-sm btn-icon btn-ghost mic-remove" onClick={onRemove} aria-label={`${t('Remove mic')} ${m.mic}`} title={t('Remove mic')}>
+          <Icon name="trash" size={16} />
+        </button>
       </div>
       <div className="mic-bottom">
         <div className="mic-level">
@@ -146,20 +150,32 @@ function MicRow({ m, devices, peak, open, onToggle }: { m: Mic; devices: AudioDe
 
 export function MicsPanel({ state }: { state: State }) {
   const levels = useLevels()
+  const perf = usePerf()
   const [open, setOpen] = useState<number | null>(null)
+  const [removing, setRemoving] = useState<Mic | null>(null)
   const devices = state.audioDevices
+  const room = perf ? roomShort(perf.forecast.moreMics) : null
+  const rules = removing ? state.vfa.rules.filter((r) => r.source === `mic:${removing.mic}`).length : 0
   return (
     <Panel
       title={t('Microphones')}
       className="mics"
       actions={
-        <button type="button" className="btn btn-sm btn-ghost push-end" onClick={() => send({ cmd: 'refreshDevices' })} title={t('Look for audio devices again')}>
-          <Icon name="refresh" size={16} />
-          {t('Refresh devices')}
-        </button>
+        <>
+          <button type="button" className="btn btn-sm btn-soft" onClick={() => send({ cmd: 'addMic' })}>
+            <Icon name="plus" size={16} />
+            {t('Add mic')}
+          </button>
+          {room && <span className={`meta room ${perf?.forecast.moreMics === 0 ? 'room-full' : ''}`}>{room}</span>}
+          <button type="button" className="btn btn-sm btn-ghost push-end" onClick={() => send({ cmd: 'refreshDevices' })} title={t('Look for audio devices again')}>
+            <Icon name="refresh" size={16} />
+            {t('Refresh devices')}
+          </button>
+        </>
       }
     >
       {devices.length === 0 && <p className="hint">{t('No audio devices found. Connect an interface and refresh.')}</p>}
+      {state.mics.length === 0 && <p className="empty">{t('No mics yet. Add one per microphone channel.')}</p>}
       <div className="mic-list">
         {state.mics.map((m) => (
           <MicRow
@@ -169,9 +185,26 @@ export function MicsPanel({ state }: { state: State }) {
             peak={levels?.mics[m.mic]}
             open={open === m.mic}
             onToggle={() => setOpen(open === m.mic ? null : m.mic)}
+            onRemove={() => setRemoving(m)}
           />
         ))}
       </div>
+      {removing && (
+        <ConfirmDialog
+          title={`${t('Remove mic')} ${removing.mic}?`}
+          confirmLabel={t('Remove mic')}
+          onConfirm={() => send({ cmd: 'removeMic', mic: removing.mic })}
+          onClose={() => setRemoving(null)}
+        >
+          <p>
+            <b>{micLabel(removing, removing.mic)}</b>
+          </p>
+          <p className="hint">
+            {t('The number stays free; VFA rules that listen to this mic are cleared.')}
+            {rules > 0 && ` (${rules} ${rules === 1 ? t('rule') : t('rules')})`}
+          </p>
+        </ConfirmDialog>
+      )}
     </Panel>
   )
 }

@@ -8,7 +8,11 @@ import {
   gfxPlayCommand,
   keyToAction,
   meterFill,
-  mvSlotBox,
+  areaBox,
+  fallbackMultiview,
+  keyForSlot,
+  mvLayout,
+  slotForKey,
   needMet,
   normalizeLevels,
   normalizeState,
@@ -20,11 +24,37 @@ import {
 const key = (code: string, shiftKey = false) => ({ code, shiftKey, ctrlKey: false, metaKey: false, altKey: false })
 
 describe('multiview layout', () => {
-  it('places slots in two rows of four in the bottom half', () => {
-    expect(mvSlotBox(1)).toEqual({ x: 0, y: 0.5, w: 0.25, h: 0.25 })
-    expect(mvSlotBox(4)).toEqual({ x: 0.75, y: 0.5, w: 0.25, h: 0.25 })
-    expect(mvSlotBox(5)).toEqual({ x: 0, y: 0.75, w: 0.25, h: 0.25 })
-    expect(mvSlotBox(8)).toEqual({ x: 0.75, y: 0.75, w: 0.25, h: 0.25 })
+  it('matches the engine: four columns up to eight inputs', () => {
+    const t8 = mvLayout(8)
+    expect(t8[0]).toEqual({ x: 0, y: 360, w: 320, h: 180 })
+    expect(t8[3]).toEqual({ x: 960, y: 360, w: 320, h: 180 })
+    expect(t8[7]).toEqual({ x: 960, y: 540, w: 320, h: 180 })
+    expect(mvLayout(1)).toEqual([{ x: 0, y: 360, w: 320, h: 180 }])
+    expect(mvLayout(0)).toEqual([])
+  })
+  it('adds columns until the rows fit the lower half', () => {
+    // 9: 5 columns of 256x144, two rows; 12: 6 columns of 213x119.
+    expect(mvLayout(9)[5]).toEqual({ x: 0, y: 504, w: 256, h: 144 })
+    const t12 = mvLayout(12)
+    expect(t12[11]).toEqual({ x: 5 * 213, y: 360 + 119, w: 213, h: 119 })
+    for (const n of [9, 12, 20, 33, 64]) {
+      const tiles = mvLayout(n)
+      expect(tiles).toHaveLength(n)
+      for (const a of tiles) {
+        expect(a.y + a.h).toBeLessThanOrEqual(720)
+        expect(a.x + a.w).toBeLessThanOrEqual(1280)
+      }
+    }
+  })
+  it('turns pixel areas into fractions of the picture', () => {
+    expect(areaBox({ x: 640, y: 0, w: 640, h: 360 }, { width: 1280, height: 720 })).toEqual({ x: 0.5, y: 0, w: 0.5, h: 0.5 })
+    expect(areaBox({ x: 320, y: 540, w: 320, h: 180 }, { width: 1280, height: 720 })).toEqual({ x: 0.25, y: 0.75, w: 0.25, h: 0.25 })
+  })
+  it('builds a layout for older engines from the input numbers, gaps included', () => {
+    const mv = fallbackMultiview([1, 2, 5])
+    expect(mv.tiles.map((x) => x.slot)).toEqual([1, 2, 5])
+    expect(mv.tiles[2]).toMatchObject({ x: 640, y: 360 })
+    expect(mv.program).toEqual({ x: 640, y: 0, w: 640, h: 360 })
   })
 })
 
@@ -53,11 +83,23 @@ describe('meter', () => {
 })
 
 describe('keyboard', () => {
-  it('maps digits to preview and Shift+digits to program', () => {
-    expect(keyToAction(key('Digit3'))).toEqual({ kind: 'preview', slot: 3 })
-    expect(keyToAction(key('Digit8', true))).toEqual({ kind: 'program', slot: 8 })
-    expect(keyToAction(key('Numpad2'))).toEqual({ kind: 'preview', slot: 2 })
-    expect(keyToAction(key('Digit9'))).toBeNull()
+  it('maps digits to preview and Shift+digits to program, by list position', () => {
+    expect(keyToAction(key('Digit3'))).toEqual({ kind: 'preview', position: 3 })
+    expect(keyToAction(key('Digit8', true))).toEqual({ kind: 'program', position: 8 })
+    expect(keyToAction(key('Numpad2'))).toEqual({ kind: 'preview', position: 2 })
+    expect(keyToAction(key('Digit9'))).toEqual({ kind: 'preview', position: 9 })
+    expect(keyToAction(key('Digit0'))).toBeNull()
+  })
+  it('finds the input for a digit in list order, with gaps in the numbers', () => {
+    const slots = [{ slot: 1 }, { slot: 3 }, { slot: 4 }, { slot: 12 }]
+    expect(slotForKey(slots, 2)).toBe(3)
+    expect(slotForKey(slots, 4)).toBe(12)
+    expect(slotForKey(slots, 5)).toBeNull()
+    expect(keyForSlot(slots, 12)).toBe(4)
+    expect(keyForSlot(slots, 2)).toBeNull()
+    const many = Array.from({ length: 12 }, (_, i) => ({ slot: i + 1 }))
+    expect(keyForSlot(many, 9)).toBe(9)
+    expect(keyForSlot(many, 10)).toBeNull()
   })
   it('maps Space, Enter and F', () => {
     expect(keyToAction(key('Space'))).toEqual({ kind: 'cut' })
@@ -101,6 +143,7 @@ describe('capabilities', () => {
     expect(specNeed('decklink-mv:1')).toBe('decklink')
     expect(specNeed('ndi:Cam')).toBe('ndi')
     expect(specNeed('srt://x:1')).toBe('srt')
+    expect(specNeed('st2110:/x.sdp')).toBe('st2110')
     expect(specNeed('test:bars')).toBeUndefined()
   })
 })
@@ -155,8 +198,10 @@ describe('graphics play', () => {
 describe('older engines', () => {
   it('fills mics, VFA and graphics when the engine does not send them', () => {
     const s = normalizeState({ version: '0.1.0' } as never)
-    expect(s.mics).toHaveLength(8)
+    expect(s.mics).toEqual([])
     expect(s.audioDevices).toEqual([])
+    expect(s.videoDevices).toEqual([])
+    expect(s.multiview.tiles).toEqual([])
     expect(s.vfa.enabled).toBe(false)
     expect(s.vfa.thresholdDb).toBe(-42)
     expect(s.graphics.layers.map((l) => l.layer)).toEqual([1, 2])

@@ -109,6 +109,8 @@ const de: Record<string, string> = {
   'Needs NDI, not available on this engine': 'Braucht NDI, auf dieser Engine nicht vorhanden',
   'Needs SRT, not available on this engine': 'Braucht SRT, auf dieser Engine nicht vorhanden',
   'Needs a video encoder, none available on this engine': 'Braucht einen Video-Encoder, auf dieser Engine keiner vorhanden',
+  'Screen capture is not available on this engine': 'Bildschirmaufnahme ist in dieser Engine nicht verfügbar',
+  'WebRTC (WHEP) is not available on this engine': 'WebRTC (WHEP) ist in dieser Engine nicht verfügbar',
 
   // Audio
   Audio: 'Audio',
@@ -284,6 +286,132 @@ const de: Record<string, string> = {
   'Start the graphics renderer to load and play graphics. Layers keep their last picture.': 'Zum Laden und Abspielen den Grafik-Renderer starten. Die Ebenen behalten ihr letztes Bild.',
   'No graphics found. Put OGraf graphics into Documents/LZ Vision Mixer/Graphics and rescan.': 'Keine Grafiken gefunden. OGraf-Grafiken in Dokumente/LZ Vision Mixer/Graphics legen und neu einlesen.',
   'Not valid JSON; the last valid value is kept.': 'Kein gültiges JSON; der letzte gültige Wert bleibt.',
+
+  // Adding and removing inputs and mics
+  'Add input': 'Eingang hinzufügen',
+  'Add empty input': 'Leeren Eingang hinzufügen',
+  'Remove input': 'Eingang entfernen',
+  'No inputs yet. Add one for each camera, file or stream.': 'Noch keine Eingänge. Einen pro Kamera, Datei oder Stream hinzufügen.',
+  'This input is on air. Removing it takes it off the programme.': 'Dieser Eingang ist on air. Entfernen nimmt ihn aus dem Programm.',
+  'The number stays free; overlays, VFA rules and the wide shot that use this input are cleared.':
+    'Die Nummer bleibt frei; Overlays, VFA-Regeln und die Totale, die diesen Eingang nutzen, werden geleert.',
+  rule: 'Regel',
+  rules: 'Regeln',
+  'Add mic': 'Mikro hinzufügen',
+  'Remove mic': 'Mikro entfernen',
+  'No mics yet. Add one per microphone channel.': 'Noch keine Mikros. Eins pro Mikrofonkanal hinzufügen.',
+  'The number stays free; VFA rules that listen to this mic are cleared.': 'Die Nummer bleibt frei; VFA-Regeln, die auf dieses Mikro hören, werden gelöscht.',
+  'Add an input first': 'Erst einen Eingang hinzufügen',
+  'Forecast from the engine load, see Performance': 'Prognose aus der Auslastung der Engine, siehe Leistung',
+  'First nine inputs to preview': 'Erste neun Eingänge auf Vorschau',
+  'First nine inputs straight to programme': 'Erste neun Eingänge direkt auf Programm',
+
+  // Source dialog
+  'Source type': 'Quellenart',
+  'Source spec': 'Quellangabe',
+  'Custom spec': 'Eigene Angabe',
+  'Custom spec: the engine reads it as typed below.': 'Eigene Angabe: Die Engine liest sie so, wie sie unten steht.',
+  'Choose a source type.': 'Eine Quellenart wählen.',
+  'Choose a source type, or add the input empty and choose later.': 'Eine Quellenart wählen oder den Eingang leer hinzufügen und später wählen.',
+  'Fill in the fields above': 'Felder oben ausfüllen',
+  'From the source if empty': 'Leer: aus der Quelle',
+  'Keeps the input and its number, without a source': 'Behält den Eingang und seine Nummer, ohne Quelle',
+  'Choose…': 'Wählen …',
+  'None found': 'Keine gefunden',
+  'not available': 'nicht vorhanden',
+  'Browse…': 'Durchsuchen …',
+  'Waiting for the dialog…': 'Warte auf den Dialog …',
+  'Nothing chosen.': 'Nichts gewählt.',
+  'Opens on the computer running the engine.': 'Öffnet sich auf dem Rechner, auf dem die Engine läuft.',
+  'Choose where to record. Opens on the computer running the engine.': 'Speicherort der Aufnahme wählen. Öffnet sich auf dem Rechner, auf dem die Engine läuft.',
+  'Look for cameras and audio devices again': 'Kameras und Audiogeräte neu suchen',
+  Sound: 'Ton',
+  'From the device, if it has any': 'Vom Gerät selbst, falls vorhanden',
+  'No cameras or capture cards found. Connect one and refresh.': 'Keine Kameras oder Capture-Karten gefunden. Eine anschließen und neu suchen.',
+  Display: 'Bildschirm',
+  main: 'Hauptbildschirm',
+  Port: 'Port',
+  Host: 'Host',
+  'Address (multicast or 0.0.0.0)': 'Adresse (Multicast oder 0.0.0.0)',
+  URL: 'URL',
+  File: 'Datei',
+  Folder: 'Ordner',
+  'Source name': 'Quellname',
+  'Cameras & capture': 'Kameras & Capture',
+  Screen: 'Bildschirm',
+  Network: 'Netzwerk',
+  Files: 'Dateien',
+  DeckLink: 'DeckLink',
+  NDI: 'NDI',
+  'Test patterns': 'Testbilder',
+  'Test pattern': 'Testbild',
+  'Camera or capture card': 'Kamera oder Capture-Karte',
+  'USB camera, HDMI or SDI capture; sound optionally from an audio device': 'USB-Kamera, HDMI- oder SDI-Capture; Ton wahlweise von einem Audiogerät',
+  'Screen capture': 'Bildschirmaufnahme',
+  'A display of the engine computer': 'Ein Bildschirm des Engine-Rechners',
+  'The mixer waits on a port; the sender connects to it': 'Der Mischer wartet auf einem Port; der Sender verbindet sich dorthin',
+  'SRT caller': 'SRT-Caller',
+  'The mixer connects to a sender that listens': 'Der Mischer verbindet sich mit einem Sender, der wartet',
+  RTMP: 'RTMP',
+  'Pulls a stream from an RTMP server': 'Holt einen Stream von einem RTMP-Server',
+  RTSP: 'RTSP',
+  'IP cameras and RTSP servers': 'IP-Kameras und RTSP-Server',
+  'UDP MPEG-TS': 'UDP MPEG-TS',
+  'Transport stream on a UDP port, also multicast': 'Transportstrom auf einem UDP-Port, auch Multicast',
+  'HLS / DASH URL': 'HLS-/DASH-URL',
+  'http(s) stream, also .m3u8 and .mpd': 'http(s)-Stream, auch .m3u8 und .mpd',
+  'WebRTC (WHEP)': 'WebRTC (WHEP)',
+  'WHEP endpoint of OBS, vMix or a WebRTC server': 'WHEP-Endpunkt von OBS, vMix oder einem WebRTC-Server',
+  'SMPTE ST 2110': 'SMPTE ST 2110',
+  'Reserved; needs the Intel Media Transport Library plugin': 'Vorgemerkt; braucht das Plugin der Intel Media Transport Library',
+  'Plays in a loop': 'Läuft in Schleife',
+  'PNG, JPEG and other images': 'PNG, JPEG und andere Bilder',
+  'Watch folder': 'Überwachter Ordner',
+  'Shows the newest image in a folder and switches when a newer one arrives': 'Zeigt das neueste Bild eines Ordners und wechselt, sobald ein neueres kommt',
+  'SDP file': 'SDP-Datei',
+  'RTP stream described by an SDP file, also AES67 audio': 'RTP-Stream aus einer SDP-Datei, auch AES67-Audio',
+  'DeckLink input': 'DeckLink-Eingang',
+  'Video mode is detected automatically': 'Das Videoformat wird automatisch erkannt',
+  'Source name as shown in NDI tools, e.g. MACHINE (Camera 1)': 'Quellname wie in den NDI-Tools, z. B. RECHNER (Kamera 1)',
+  'SMPTE and colour bars come with a 1 kHz tone': 'SMPTE- und Farbbalken kommen mit 1-kHz-Ton',
+  'Needs SMPTE ST 2110 support, not available on this engine': 'Braucht SMPTE-ST-2110-Unterstützung, auf dieser Engine nicht vorhanden',
+
+  // Performance
+  Performance: 'Leistung',
+  CPU: 'CPU',
+  'whole machine': 'ganzer Rechner',
+  Mixer: 'Mischer',
+  'Other programs': 'Andere Programme',
+  Limit: 'Grenze',
+  Memory: 'Arbeitsspeicher',
+  Output: 'Ausgabe',
+  Cores: 'Kerne',
+  input: 'Eingang',
+  inputs: 'Eingänge',
+  mic: 'Mikro',
+  mics: 'Mikros',
+  Forecast: 'Prognose',
+  'Running smoothly': 'Läuft rund',
+  'Machine busy': 'Rechner stark ausgelastet',
+  'Output dips below the frame rate': 'Ausgabe fällt unter die Bildrate',
+  'Overloaded: frames are dropped': 'Überlastet: Bilder fallen aus',
+  'No room for more': 'Kein Platz für mehr',
+  'Room for ~{n} more': 'Platz für ~{n} weitere',
+  'No forecast yet.': 'Noch keine Prognose.',
+  'The machine is full: no more inputs or mics fit.': 'Der Rechner ist voll: Es passen keine weiteren Eingänge oder Mikros.',
+  '{n} more input': '{n} weiterer Eingang',
+  '{n} more inputs': '{n} weitere Eingänge',
+  '{n} more mic': '{n} weiteres Mikro',
+  '{n} more mics': '{n} weitere Mikros',
+  'About {inputs} and {mics} fit.': 'Etwa {inputs} und {mics} passen noch.',
+  'One input costs about {input} % of one core, one mic about {mic} %.': 'Ein Eingang kostet etwa {input} % eines Kerns, ein Mikro etwa {mic} %.',
+  'Measured on this machine': 'Auf diesem Rechner gemessen',
+  Estimate: 'Schätzung',
+  'The costs are learned from this machine while the engine runs, also from earlier runs, and get more exact as inputs come and go.':
+    'Die Kosten lernt die Engine auf diesem Rechner, während sie läuft, auch aus früheren Läufen, und sie werden genauer, wenn Eingänge dazukommen oder wegfallen.',
+  'Not measured yet: these are default costs. The engine learns the real ones on this machine once the number of running inputs changes, and refines them from then on.':
+    'Noch nicht gemessen: Das sind Standardwerte. Die echten Kosten lernt die Engine auf diesem Rechner, sobald sich die Zahl laufender Eingänge ändert, und verfeinert sie danach laufend.',
+  'Room counts up to 80 % of the whole machine, other programs included.': 'Gerechnet wird bis 80 % des ganzen Rechners, andere Programme eingeschlossen.',
 }
 
 function detect(): 'en' | 'de' {
@@ -343,8 +471,14 @@ export function needLabel(need: Need | undefined): string {
       return t('Needs NDI, not available on this engine')
     case 'srt':
       return t('Needs SRT, not available on this engine')
+    case 'st2110':
+      return t('Needs SMPTE ST 2110 support, not available on this engine')
     case 'encoder':
       return t('Needs a video encoder, none available on this engine')
+    case 'screen':
+      return t('Screen capture is not available on this engine')
+    case 'whep':
+      return t('WebRTC (WHEP) is not available on this engine')
     default:
       return ''
   }

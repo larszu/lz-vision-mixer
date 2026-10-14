@@ -1,9 +1,9 @@
 // Pure helpers: no DOM, no React, so they can be unit-tested in Node.
 import { STRIP_NEUTRAL } from './strip'
-import type { Capabilities, Command, GraphicInfo, GraphicsLayer, Levels, Mic, Rect, State } from './types'
+import type { Area, Capabilities, Command, GraphicInfo, GraphicsLayer, Levels, Mic, MultiviewLayout, Rect, Slot, State } from './types'
 import { VFA_DEFAULTS } from './vfa'
 
-/* ---------- Multiview layout (docs/api.md, 1280x720) ---------- */
+/* ---------- Multiview layout (docs/api.md, state.multiview) ---------- */
 
 export interface Box {
   x: number
@@ -12,13 +12,40 @@ export interface Box {
   h: number
 }
 
-export const MV_PREVIEW: Box = { x: 0, y: 0, w: 0.5, h: 0.5 }
-export const MV_PROGRAM: Box = { x: 0.5, y: 0, w: 0.5, h: 0.5 }
+export const MV_W = 1280
+export const MV_H = 720
 
-/** Tile of slot 1..8: two rows of four in the bottom half. */
-export function mvSlotBox(slot: number): Box {
-  const i = slot - 1
-  return { x: (i % 4) * 0.25, y: 0.5 + Math.floor(i / 4) * 0.25, w: 0.25, h: 0.25 }
+/**
+ * Tile rectangles for `count` inputs, exactly as the engine lays them out:
+ * four columns up to eight inputs, then more columns until all rows fit the
+ * lower half. Only used when an older engine sends no `multiview`.
+ */
+export function mvLayout(count: number, width = MV_W, height = MV_H): Area[] {
+  let cols = 4
+  for (;;) {
+    const w = Math.floor(width / cols)
+    const h = Math.floor((w * 9) / 16)
+    const rows = Math.max(1, Math.ceil(count / cols))
+    if (rows * h <= Math.floor(height / 2) || cols >= Math.max(count, 4))
+      return Array.from({ length: count }, (_, i) => ({ x: (i % cols) * w, y: Math.floor(height / 2) + Math.floor(i / cols) * h, w, h }))
+    cols++
+  }
+}
+
+export function fallbackMultiview(slots: number[]): MultiviewLayout {
+  const half = { w: MV_W / 2, h: MV_H / 2 }
+  return {
+    width: MV_W,
+    height: MV_H,
+    preview: { x: 0, y: 0, ...half },
+    program: { x: MV_W / 2, y: 0, ...half },
+    tiles: mvLayout(slots.length).map((a, i) => ({ ...a, slot: slots[i] })),
+  }
+}
+
+/** A pixel area of the multiview as fractions 0..1, for CSS percentages. */
+export function areaBox(a: Area, mv: { width: number; height: number }): Box {
+  return { x: a.x / mv.width, y: a.y / mv.height, w: a.w / mv.width, h: a.h / mv.height }
 }
 
 /* ---------- Audio ---------- */
@@ -85,8 +112,9 @@ export function wsUrl(pageHref: string): string {
 /* ---------- Keyboard ---------- */
 
 export type KeyAction =
-  | { kind: 'preview'; slot: number }
-  | { kind: 'program'; slot: number }
+  /** `position` is 1-based in the input list, not the input number. */
+  | { kind: 'preview'; position: number }
+  | { kind: 'program'; position: number }
   | { kind: 'cut' }
   | { kind: 'auto' }
   | { kind: 'ftb' }
@@ -108,8 +136,8 @@ export interface KeyLike {
 /** Uses physical key codes, so Shift+1 works on German and English layouts alike. */
 export function keyToAction(e: KeyLike): KeyAction | null {
   if (e.ctrlKey || e.metaKey || e.altKey) return null
-  const m = /^(?:Digit|Numpad)([1-8])$/.exec(e.code)
-  if (m) return { kind: e.shiftKey ? 'program' : 'preview', slot: Number(m[1]) }
+  const m = /^(?:Digit|Numpad)([1-9])$/.exec(e.code)
+  if (m) return { kind: e.shiftKey ? 'program' : 'preview', position: Number(m[1]) }
   if (e.key === '?') return { kind: 'help' }
   if (e.shiftKey) return null
   if (e.code === 'Space') return { kind: 'cut' }
@@ -121,10 +149,21 @@ export function keyToAction(e: KeyLike): KeyAction | null {
   return null
 }
 
+/** Input number for digit key 1..9: the first nine inputs in list order, gaps or not. */
+export function slotForKey(slots: Pick<Slot, 'slot'>[], position: number): number | null {
+  return slots[position - 1]?.slot ?? null
+}
+
+/** Digit key of an input, if it is among the first nine. */
+export function keyForSlot(slots: Pick<Slot, 'slot'>[], slot: number): number | null {
+  const i = slots.findIndex((s) => s.slot === slot)
+  return i >= 0 && i < 9 ? i + 1 : null
+}
+
 /** Keyboard shortcuts for the help dialog: keys shown as written, action as an English UI string. */
 export const SHORTCUTS: { keys: string; action: string }[] = [
-  { keys: '1 … 8', action: 'Input to preview' },
-  { keys: 'Shift + 1 … 8', action: 'Input straight to programme' },
+  { keys: '1 … 9', action: 'First nine inputs to preview' },
+  { keys: 'Shift + 1 … 9', action: 'First nine inputs straight to programme' },
   { keys: 'Space', action: 'Cut' },
   { keys: 'Enter', action: 'Auto transition' },
   { keys: 'F', action: 'Fade to black' },
@@ -160,23 +199,14 @@ export function gfxHasNext(layer: GraphicsLayer, info: GraphicInfo | undefined):
 /** Fills the parts of State an older engine does not send yet, so the UI never crashes on them. */
 export function normalizeState(raw: State): State {
   const s = raw as Partial<State> & State
-  const mics =
-    s.mics ??
-    Array.from({ length: 8 }, (_, i) => ({
-      mic: i + 1,
-      name: '',
-      device: null,
-      channel: 0,
-      status: 'empty' as const,
-      error: null,
-      volume: 1,
-      muted: false,
-      inProgram: true,
-    }))
+  const mics = s.mics ?? []
+  const slots = s.slots ?? []
   return {
     ...s,
-    slots: (s.slots ?? []).map((x) => ({ ...x, audio: { ...x.audio, delayMs: x.audio?.delayMs ?? 0 } })),
+    slots: slots.map((x) => ({ ...x, audio: { ...x.audio, delayMs: x.audio?.delayMs ?? 0 } })),
     audioDevices: s.audioDevices ?? [],
+    videoDevices: s.videoDevices ?? [],
+    multiview: s.multiview ?? fallbackMultiview(slots.map((x) => x.slot)),
     audioOutputs: s.audioOutputs ?? [],
     mics: mics.map((m) => ({ ...m, delayMs: (m as Partial<Mic>).delayMs ?? 0, strip: { ...STRIP_NEUTRAL, ...(m as Partial<Mic>).strip } })),
     vfa: s.vfa ?? { ...VFA_DEFAULTS, enabled: false, rules: [], wideSlot: null, transition: 'cut', speaking: null },
@@ -195,7 +225,7 @@ export function normalizeLevels(raw: Levels): Levels {
 
 /* ---------- Presets ---------- */
 
-export type Need = 'decklink' | 'ndi' | 'srt' | 'encoder'
+export type Need = 'decklink' | 'ndi' | 'srt' | 'st2110' | 'encoder' | 'screen' | 'whep'
 
 export interface SpecPreset {
   label: string
@@ -204,22 +234,6 @@ export interface SpecPreset {
   /** The spec needs completing (a path, a name, a key), so it only prefills the field. */
   partial?: boolean
 }
-
-export const SOURCE_PRESETS: SpecPreset[] = [
-  { label: 'SMPTE bars', spec: 'test:smpte' },
-  { label: 'Colour bars', spec: 'test:bars' },
-  { label: 'Bouncing ball', spec: 'test:ball' },
-  { label: 'Black', spec: 'test:black' },
-  { label: 'Snow', spec: 'test:snow' },
-  { label: 'DeckLink 1', spec: 'decklink:0', need: 'decklink' },
-  { label: 'DeckLink 2', spec: 'decklink:1', need: 'decklink' },
-  { label: 'DeckLink 3', spec: 'decklink:2', need: 'decklink' },
-  { label: 'DeckLink 4', spec: 'decklink:3', need: 'decklink' },
-  { label: 'NDI source', spec: 'ndi:', need: 'ndi', partial: true },
-  { label: 'SRT listener', spec: 'srt://0.0.0.0:9000?mode=listener', need: 'srt' },
-  { label: 'Video file', spec: 'file:/', partial: true },
-  { label: 'Still image', spec: 'image:/', partial: true },
-]
 
 export const OUTPUT_PRESETS: SpecPreset[] = [
   { label: 'DeckLink 1 programme', spec: 'decklink:0', need: 'decklink' },
@@ -236,7 +250,8 @@ export const audioOutputSpec = (deviceId: string) => `audio:${deviceId}`
 export function needMet(need: Need | undefined, caps: Capabilities | undefined): boolean {
   if (!need || !caps) return true
   if (need === 'encoder') return caps.encoders.length > 0
-  return caps[need]
+  // Older engines do not report screen/whep; assume available there.
+  return caps[need] ?? true
 }
 
 /** Which capability a typed spec depends on, so free text gets the same warning as presets. */
@@ -245,6 +260,9 @@ export function specNeed(spec: string): Need | undefined {
   if (s.startsWith('decklink')) return 'decklink'
   if (s.startsWith('ndi:')) return 'ndi'
   if (s.startsWith('srt://')) return 'srt'
+  if (s.startsWith('st2110:')) return 'st2110'
+  if (s.startsWith('screen:')) return 'screen'
+  if (s.startsWith('whep:')) return 'whep'
   return undefined
 }
 

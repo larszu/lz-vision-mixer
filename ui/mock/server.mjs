@@ -1,8 +1,12 @@
 // Mock of the LZ Vision Mixer engine for UI development (docs/api.md).
 // Simulates state, commands, transitions, levels and the multiview stream.
 // Also microphones, video follows audio (with a fake conversation) and OGraf graphics.
+// Also adding/removing inputs and mics, the multiview layout, the file picker and load/forecast.
 // Run: npm run mock   (PORT=4295 to avoid a running engine, MOCK_DECKLINK=1 pretends
-// DeckLink hardware exists, MOCK_NO_RENDERER=1 starts without a graphics renderer)
+// DeckLink hardware exists, MOCK_NO_RENDERER=1 starts without a graphics renderer,
+// MOCK_INPUTS=12 starts with that many inputs, MOCK_PICK_CANCEL=1 makes every file
+// dialog "cancelled", MOCK_BUSY=1 lets other programs eat the CPU)
+import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, extname, join, normalize } from 'node:path'
@@ -12,7 +16,9 @@ import { WebSocketServer } from 'ws'
 const here = dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT) || 4195
 const HOST = '127.0.0.1'
-const FRAME = readFileSync(join(here, 'multiview.jpg'))
+// Fallback picture; with ffmpeg on the PATH the mock draws one that matches the layout.
+const STATIC_FRAME = readFileSync(join(here, 'multiview.jpg'))
+let FRAME = STATIC_FRAME
 const DIST = join(here, '..', 'dist')
 
 const slot = (n, name, spec, extra = {}) => ({
@@ -83,6 +89,64 @@ const state = {
 }
 state.slots[6].status = state.capabilities.decklink ? 'running' : 'error'
 if (state.capabilities.decklink) state.slots[6].error = null
+
+/* ---------- more inputs, video devices, multiview layout ---------- */
+
+// MOCK_INPUTS=12: a bigger show. Extra inputs are cameras, streams and files.
+const EXTRA_INPUTS = [
+  ['Camera 2', 'device:avf:0'],
+  ['Camera 3', 'device:avf:1#audio=coreaudio:usb-codec'],
+  ['Remote guest', 'srt://0.0.0.0:9001?mode=listener'],
+  ['Slides', 'screen:1'],
+  ['Stage', 'rtsp://192.168.1.50:554/stream1'],
+  ['Phone', 'whep:https://mixer.local/whep/phone'],
+  ['Crowd cam', 'device:avf:2'],
+  ['Sponsor loop', 'file:/clips/sponsors.mp4'],
+  ['Drone', 'udp://0.0.0.0:5000'],
+  ['Photo booth', 'folder:/Users/booth/Outbox'],
+  ['Stream', 'https://cdn.example.com/live/index.m3u8'],
+  ['Lyrics PC', 'ndi:LYRICS-PC (Output)'],
+]
+for (let i = state.slots.length; i < (Number(process.env.MOCK_INPUTS) || 8); i++) {
+  const [name, spec] = EXTRA_INPUTS[(i - 8) % EXTRA_INPUTS.length]
+  state.slots.push(slot(i + 1, name, spec))
+}
+// Input numbers are never reused while running (docs/api.md), even after removing the highest.
+let nextSlotNumber = Math.max(0, ...state.slots.map((x) => x.slot)) + 1
+
+const VIDEO_DEVICES = [
+  { id: 'avf:0', name: 'FaceTime HD Camera' },
+  { id: 'avf:1', name: 'Cam Link 4K' },
+  { id: 'avf:2', name: 'Blackmagic Web Presenter HD' },
+]
+const EXTRA_VIDEO = { id: 'avf:3', name: 'OBSBOT Tiny 2' }
+state.videoDevices = [...VIDEO_DEVICES]
+
+// Exactly the engine's layout: four columns up to eight inputs, then more columns
+// until all rows fit the lower half; integer pixels.
+const MV_W = 1280
+const MV_H = 720
+function mvTiles(count) {
+  let cols = 4
+  for (;;) {
+    const w = Math.floor(MV_W / cols)
+    const h = Math.floor((w * 9) / 16)
+    const rows = Math.max(1, Math.ceil(count / cols))
+    if (rows * h <= MV_H / 2 || cols >= Math.max(count, 4))
+      return Array.from({ length: count }, (_, i) => ({ x: (i % cols) * w, y: MV_H / 2 + Math.floor(i / cols) * h, w, h }))
+    cols++
+  }
+}
+function updateMultiview() {
+  state.multiview = {
+    width: MV_W,
+    height: MV_H,
+    preview: { x: 0, y: 0, w: MV_W / 2, h: MV_H / 2 },
+    program: { x: MV_W / 2, y: 0, w: MV_W / 2, h: MV_H / 2 },
+    tiles: mvTiles(state.slots.length).map((a, i) => ({ slot: state.slots[i].slot, ...a })),
+  }
+}
+updateMultiview()
 
 /* ---------- audio devices and mics ---------- */
 
@@ -163,6 +227,7 @@ state.mics = [
   mic(7),
   mic(8),
 ]
+let nextMicNumber = 9
 
 /* ---------- graphics library (what the renderer bundles) ---------- */
 
@@ -256,7 +321,11 @@ function broadcast(msg) {
   const s = JSON.stringify(msg)
   for (const c of clients) if (c.readyState === 1) c.send(s)
 }
-const pushState = () => broadcast({ type: 'state', state })
+const pushState = () => {
+  updateMultiview()
+  renderFrame()
+  broadcast({ type: 'state', state })
+}
 
 /* ---------- transitions ---------- */
 
@@ -318,10 +387,13 @@ const getLayer = (n) => {
 }
 
 function nameFromSpec(spec) {
-  const m = /^(test|decklink|ndi|file|image):(.*)$/.exec(spec)
+  const m = /^(test|decklink|ndi|file|image|folder|sdp|st2110|device|screen|whep):(.*)$/.exec(spec)
   if (!m) return spec.split('?')[0].replace(/^\w+:\/\//, '')
   if (m[1] === 'test') return m[2].toUpperCase()
   if (m[1] === 'decklink') return `DeckLink ${Number(m[2]) + 1}`
+  if (m[1] === 'screen') return `Screen ${Number(m[2]) + 1}`
+  if (m[1] === 'device') return state.videoDevices.find((d) => d.id === m[2].split('#')[0])?.name ?? m[2]
+  if (m[1] === 'whep') return 'WebRTC'
   return m[2].split('/').pop() || m[1]
 }
 
@@ -330,8 +402,16 @@ function sourceProblem(spec) {
   if (spec.startsWith('ndi:') && !state.capabilities.ndi) return 'NDI not available'
   if (spec.startsWith('srt://') && !state.capabilities.srt) return 'SRT not available'
   if (spec.startsWith('st2110:')) return 'ST 2110 is not wired yet'
-  if (!/^(test:(smpte|bars|ball|black|snow)|decklink:\d+|ndi:.+|(srt|rtmp|rtsp|https?):\/\/.+|file:\/.+|image:\/.+|st2110:.+)$/.test(spec))
+  if (
+    !/^(test:(smpte|bars|ball|black|snow)|decklink:\d+|ndi:.+|device:[^#]+(#audio=.+)?|screen:\d+|whep:https?:\/\/.+|(srt|rtmps?|rtsps?|https?|udp):\/\/.+|(file|image|folder|sdp):.+|st2110:.+)$/.test(
+      spec,
+    )
+  )
     return `Unknown source spec: ${spec}`
+  const dev = /^device:([^#]+)(?:#audio=(.+))?$/.exec(spec)
+  if (dev && !state.videoDevices.some((d) => d.id === dev[1])) return `Video device not found: ${dev[1]}`
+  if (dev?.[2] && !state.audioDevices.some((d) => d.id === dev[2])) return `Audio device not found: ${dev[2]}`
+  if (/^screen:[4-9]/.test(spec)) return `No display ${spec.slice(7)}`
   return null
 }
 
@@ -350,24 +430,65 @@ function outputProblem(spec) {
 
 let outputSeq = 1
 
+function startInput(s, spec, name, problem) {
+  s.spec = spec
+  s.name = name || nameFromSpec(spec)
+  s.status = 'starting'
+  s.error = null
+  setTimeout(() => {
+    if (s.spec !== spec || !state.slots.includes(s)) return
+    s.status = problem ? 'error' : 'running'
+    s.error = problem
+    pushState()
+  }, 700)
+}
+
 function apply(c) {
   need(c && typeof c.cmd === 'string', 'Missing cmd')
   switch (c.cmd) {
+    case 'addInput': {
+      if (c.spec != null) need(typeof c.spec === 'string' && c.spec.trim(), 'spec must be a non-empty string')
+      const problem = c.spec ? sourceProblem(c.spec) : null
+      need(!problem || !problem.startsWith('Unknown'), problem)
+      const s = slot(nextSlotNumber++, '', null)
+      state.slots.push(s)
+      if (c.spec) {
+        startInput(s, c.spec, c.name, problem)
+      } else if (typeof c.name === 'string') s.name = c.name.trim()
+      break
+    }
+    case 'removeInput': {
+      const s = getSlot(c.slot)
+      need(!(state.inTransition && (state.program === s.slot || state.preview === s.slot)), `Input ${s.slot} is in a running transition`)
+      state.slots = state.slots.filter((x) => x !== s)
+      if (state.program === s.slot) state.program = null
+      if (state.preview === s.slot) state.preview = null
+      for (const o of state.overlays)
+        if (o.slot === s.slot) {
+          o.slot = null
+          o.onAir = false
+        }
+      if (state.vfa.wideSlot === s.slot) state.vfa.wideSlot = null
+      state.vfa.rules = state.vfa.rules.filter((r) => r.camera !== s.slot && r.source !== `slot:${s.slot}`)
+      break
+    }
+    case 'addMic': {
+      const m = mic(nextMicNumber++, typeof c.name === 'string' ? c.name.trim() : '')
+      state.mics.push(m)
+      break
+    }
+    case 'removeMic': {
+      const m = getMic(c.mic)
+      state.mics = state.mics.filter((x) => x !== m)
+      state.vfa.rules = state.vfa.rules.filter((r) => r.source !== `mic:${m.mic}`)
+      break
+    }
     case 'setInput': {
       const s = getSlot(c.slot)
       need(typeof c.spec === 'string' && c.spec.trim(), 'Missing spec')
       const problem = sourceProblem(c.spec)
       need(!problem || !problem.startsWith('Unknown'), problem)
-      s.spec = c.spec
-      s.name = c.name || nameFromSpec(c.spec)
-      s.status = 'starting'
-      s.error = null
-      setTimeout(() => {
-        if (s.spec !== c.spec) return
-        s.status = problem ? 'error' : 'running'
-        s.error = problem
-        pushState()
-      }, 700)
+      startInput(s, c.spec, c.name, problem)
       break
     }
     case 'clearInput': {
@@ -529,6 +650,7 @@ function apply(c) {
       const has = state.audioDevices.some((d) => d.id === EXTRA_DEVICE.id)
       state.audioDevices = has ? [...DEVICES] : [...DEVICES, EXTRA_DEVICE]
       state.audioOutputs = has ? [...OUT_DEVICES] : [...OUT_DEVICES, EXTRA_OUT]
+      state.videoDevices = has ? [...VIDEO_DEVICES] : [...VIDEO_DEVICES, EXTRA_VIDEO]
       for (const m of state.mics) {
         if (!m.device) continue
         const ok = state.audioDevices.some((d) => d.id === m.device)
@@ -545,7 +667,10 @@ function apply(c) {
       }
       if (Array.isArray(c.rules)) {
         for (const r of c.rules) {
-          need(typeof r.source === 'string' && /^(slot|mic):[1-8]$/.test(r.source), `Bad VFA source: ${r.source}`)
+          need(typeof r.source === 'string' && /^(slot|mic):[1-9]\d*$/.test(r.source), `Bad VFA source: ${r.source}`)
+          const [kind, n] = r.source.split(':')
+          if (kind === 'mic') getMic(Number(n))
+          else getSlot(Number(n))
           getSlot(r.camera)
         }
         v.rules = c.rules.map((r) => ({ source: r.source, camera: r.camera }))
@@ -760,6 +885,130 @@ setInterval(() => {
   broadcast({ type: 'levels', levels: { slots, master: [master, master === -90 ? -90 : master - 1], mics, speech } })
 }, 100)
 
+/* ---------- load and forecast ---------- */
+
+// Like the engine: cost per input and mic is "estimate" (defaults) until the number of
+// running inputs has changed while running; then it is "measured" on this (pretend) machine.
+const CORES = 10
+const TRUE_PER_INPUT = 36 // % of one core, what an input really costs here
+const TRUE_PER_MIC = 1.4
+const perfModel = {
+  counts: new Set(),
+  slow: 0,
+  sample() {
+    const inputs = state.slots.filter((x) => x.status === 'running').length
+    const mics = state.mics.filter((m) => m.status === 'running').length
+    this.counts.add(inputs)
+    const jitter = () => Math.random() * 2 - 1
+    const coreLoad = 22 + TRUE_PER_INPUT * inputs + TRUE_PER_MIC * mics + 3 * jitter()
+    const cpu = Math.max(0.5, coreLoad / CORES)
+    const others = (process.env.MOCK_BUSY === '1' ? 48 : 13) + 2 * jitter()
+    const systemCpu = Math.min(100, cpu + others)
+    const nominal = state.format.fps
+    // Past ~92 % the machine cannot keep up: frames drop.
+    const outputFps = systemCpu > 92 ? Math.round(nominal * (0.8 + Math.random() * 0.08) * 10) / 10 : nominal
+    this.slow = outputFps < nominal * 0.95 ? this.slow + 1 : 0
+    const overloaded = this.slow >= 2
+    const measured = this.counts.size >= 2
+    const perInput = measured ? TRUE_PER_INPUT + 0.4 : 45
+    const perMic = measured ? TRUE_PER_MIC + 0.1 : 2
+    const room = (80 - systemCpu) * CORES
+    const fit = (cost) => (overloaded || room <= 0 ? 0 : Math.floor(room / cost))
+    const processMemoryMb = Math.round(420 + 85 * inputs + 6 * mics + 10 * jitter())
+    return {
+      cpu: Math.round(cpu * 10) / 10,
+      systemCpu: Math.round(systemCpu * 10) / 10,
+      cores: CORES,
+      memoryUsedMb: 14200 + processMemoryMb,
+      memoryTotalMb: 32768,
+      processMemoryMb,
+      outputFps,
+      nominalFps: nominal,
+      overloaded,
+      runningInputs: inputs,
+      runningMics: mics,
+      forecast: {
+        moreInputs: fit(perInput),
+        moreMics: fit(perMic),
+        perInput: Math.round(perInput * 10) / 10,
+        perMic: Math.round(perMic * 10) / 10,
+        basis: measured ? 'measured' : 'estimate',
+      },
+    }
+  },
+}
+let perf = perfModel.sample()
+setInterval(() => {
+  perf = perfModel.sample()
+  broadcast({ type: 'perf', perf })
+}, 1000)
+
+/* ---------- multiview picture ---------- */
+
+// Draws a frame that matches state.multiview with ffmpeg (if installed): programme and
+// preview on top, one tile per input. Rendered again whenever the layout or a source changes.
+const lavfiSource = (s, w, h) => {
+  const size = `s=${w}x${h}`
+  if (!s || !s.spec || s.status === 'empty') return `color=c=0x080808:${size}`
+  if (s.status === 'error') return `color=c=0x2a1210:${size}`
+  const spec = s.spec
+  if (spec === 'test:smpte') return `smptehdbars=${size}`
+  if (spec === 'test:bars') return `smptebars=${size}`
+  if (spec === 'test:black') return `color=c=black:${size}`
+  if (spec === 'test:snow') return `nullsrc=${size},format=gray,geq=lum='random(1)*255'`
+  if (spec === 'test:ball')
+    return `color=c=0x15151a:${size},drawbox=x=${Math.round(w * 0.45)}:y=${Math.round(h * 0.42)}:w=${Math.round(h * 0.16)}:h=${Math.round(h * 0.16)}:color=0xe8e8e8:t=fill`
+  const hue = [...spec].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7)
+  const tint = (n) => `0x${[0, 1, 2].map((i) => (((hue >> (i * 5)) & 0x3f) + n).toString(16).padStart(2, '0')).join('')}`
+  if (/^(file|image|folder):/.test(spec)) return `gradients=${size}:c0=${tint(10)}:c1=${tint(120)}:x0=0:y0=0:x1=${w}:y1=${h}:n=2`
+  if (/^(device|screen|decklink):/.test(spec)) return `testsrc2=${size}`
+  return `gradients=${size}:c0=${tint(20)}:c1=${tint(90)}:x0=0:y0=${h}:x1=${w}:y1=0:n=2`
+}
+let frameKey = ''
+let rendering = false
+function renderFrame() {
+  const mv = state.multiview
+  const bySlot = (n) => state.slots.find((x) => x.slot === n)
+  const key = JSON.stringify([mv, state.program, state.preview, state.slots.map((x) => [x.slot, x.spec, x.status])])
+  if (key === frameKey || rendering) return
+  rendering = true
+  const areas = [
+    [mv.preview, bySlot(state.preview)],
+    [mv.program, bySlot(state.program)],
+    ...mv.tiles.map((t) => [t, bySlot(t.slot)]),
+  ]
+  let graph = `color=c=0x080808:s=${MV_W}x${MV_H}[l0]`
+  areas.forEach(([a, s], i) => {
+    graph += `;${lavfiSource(s, a.w, a.h)},format=yuv420p[s${i}];[l${i}][s${i}]overlay=${a.x}:${a.y}[l${i + 1}]`
+  })
+  graph += `;[l${areas.length}]format=yuvj420p[out0]`
+  const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', graph, '-frames:v', '1', '-q:v', '4', '-f', 'mjpeg', 'pipe:1'])
+  const chunks = []
+  ff.stdout.on('data', (d) => chunks.push(d))
+  ff.on('error', () => {
+    // No ffmpeg: keep the static picture.
+    rendering = false
+    frameKey = key
+  })
+  ff.on('close', (code) => {
+    rendering = false
+    if (code === 0 && chunks.length) FRAME = Buffer.concat(chunks)
+    frameKey = key
+    renderFrame() // catch changes that came in meanwhile
+  })
+}
+renderFrame()
+
+/* ---------- file picker ---------- */
+
+const PICKED = {
+  video: '/Users/lars/Movies/Opener.mp4',
+  image: '/Users/lars/Pictures/Sponsor.png',
+  folder: '/Users/lars/Pictures/Photobooth',
+  sdp: '/Users/lars/Streams/aes67-stage.sdp',
+  save: '/Users/lars/Movies/Recording.mp4',
+}
+
 /* ---------- HTTP ---------- */
 
 const json = (res, code, body) => {
@@ -795,6 +1044,23 @@ const server = createServer((req, res) => {
     return
   }
   if (p === '/api/state') return json(res, 200, state)
+  if (p === '/api/perf') return json(res, 200, perf)
+  if (p === '/api/pick' && req.method === 'POST') {
+    let body = ''
+    req.on('data', (d) => (body += d))
+    req.on('end', () => {
+      let kind
+      try {
+        kind = JSON.parse(body).kind
+      } catch {
+        return json(res, 400, { error: 'Invalid JSON' })
+      }
+      if (!(kind in PICKED)) return json(res, 400, { error: `kind: unknown variant \`${kind}\`` })
+      // The real dialog takes a moment; the user picks or cancels.
+      setTimeout(() => json(res, 200, process.env.MOCK_PICK_CANCEL === '1' ? { cancelled: true } : { path: PICKED[kind] }), 600)
+    })
+    return
+  }
   if (p === '/api/cmd' && req.method === 'POST') {
     let body = ''
     req.on('data', (d) => (body += d))
@@ -850,6 +1116,7 @@ server.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => {
     clients.add(ws)
     ws.send(JSON.stringify({ type: 'state', state }))
+    ws.send(JSON.stringify({ type: 'perf', perf }))
     ws.on('message', (data) => {
       try {
         apply(JSON.parse(String(data)))

@@ -82,18 +82,19 @@ export function formatVfaValue(r: VfaRange, v: number, lang: string, offLabel: s
 export type VfaSource = { kind: 'slot' | 'mic'; n: number }
 
 export function parseSource(s: string): VfaSource | null {
-  const m = /^(slot|mic):([1-8])$/.exec(s)
+  const m = /^(slot|mic):([1-9]\d*)$/.exec(s)
   return m ? { kind: m[1] as 'slot' | 'mic', n: Number(m[2]) } : null
 }
 
 export const sourceKey = (src: VfaSource) => `${src.kind}:${src.n}`
 
-/** First source not used by a rule yet: mics first, since VFA is mostly fed by mics. */
-export function nextFreeSource(used: string[], micsInUse: number[]): string {
-  for (const n of micsInUse) if (!used.includes(`mic:${n}`)) return `mic:${n}`
-  for (let n = 1; n <= 8; n++) if (!used.includes(`mic:${n}`)) return `mic:${n}`
-  for (let n = 1; n <= 8; n++) if (!used.includes(`slot:${n}`)) return `slot:${n}`
-  return 'mic:1'
+/**
+ * First source not used by a rule yet: configured mics first, since VFA is
+ * mostly fed by mics, then the other mics, then the inputs' own audio.
+ */
+export function nextFreeSource(used: string[], micsInUse: number[], mics: number[], slots: number[]): string | null {
+  const candidates = [...micsInUse.map((n) => `mic:${n}`), ...mics.map((n) => `mic:${n}`), ...slots.map((n) => `slot:${n}`)]
+  return candidates.find((c) => !used.includes(c)) ?? candidates[0] ?? null
 }
 
 /** Fill 0..1 of a speech bar from -70 to -10 dBFS (the threshold range). */

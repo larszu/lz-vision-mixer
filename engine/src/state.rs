@@ -5,9 +5,7 @@ use crate::format::Format;
 use crate::vfa::{VfaConfig, VfaRule, VfaTransition};
 use serde::{Deserialize, Serialize};
 
-pub const SLOTS: usize = 8;
 pub const OVERLAYS: usize = 2;
-pub const MICS: usize = 8;
 pub const GFX_LAYERS: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +132,8 @@ pub struct Master {
 pub struct Capabilities {
     pub decklink: bool,
     pub ndi: bool,
+    pub screen: bool,
+    pub whep: bool,
     pub srt: bool,
     pub st2110: bool,
     pub encoders: Vec<String>,
@@ -157,10 +157,37 @@ pub struct State {
     pub capabilities: Capabilities,
     pub audio_devices: Vec<AudioDevice>,
     pub audio_outputs: Vec<AudioDevice>,
+    pub video_devices: Vec<VideoDevice>,
     pub mics: Vec<Mic>,
     pub vfa: VfaState,
     pub graphics: Graphics,
     pub osc: OscState,
+    pub multiview: MultiviewLayout,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Area {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Tile {
+    pub slot: usize,
+    #[serde(flatten)]
+    pub area: Area,
+}
+
+/// Where things sit in the multiview picture (pixels of width × height).
+#[derive(Debug, Clone, Serialize)]
+pub struct MultiviewLayout {
+    pub width: i32,
+    pub height: i32,
+    pub preview: Area,
+    pub program: Area,
+    pub tiles: Vec<Tile>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -169,6 +196,12 @@ pub struct OscState {
     pub listen: Option<String>,
     /// "host:port" targets that get tally and status feedback.
     pub targets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VideoDevice {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -284,6 +317,10 @@ pub struct Levels {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "cmd", rename_all = "camelCase")]
 pub enum Command {
+    AddInput { spec: Option<String>, name: Option<String> },
+    RemoveInput { slot: usize },
+    AddMic { name: Option<String> },
+    RemoveMic { mic: usize },
     SetInput { slot: usize, spec: String, name: Option<String> },
     ClearInput { slot: usize },
     RenameInput { slot: usize, name: String },

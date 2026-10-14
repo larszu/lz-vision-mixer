@@ -46,13 +46,21 @@ describe('VFA values', () => {
   it('parses sources', () => {
     expect(parseSource('mic:2')).toEqual({ kind: 'mic', n: 2 })
     expect(parseSource('slot:8')).toEqual({ kind: 'slot', n: 8 })
-    expect(parseSource('mic:9')).toBeNull()
+    expect(parseSource('mic:9')).toEqual({ kind: 'mic', n: 9 })
+    expect(parseSource('slot:23')).toEqual({ kind: 'slot', n: 23 })
+    expect(parseSource('mic:0')).toBeNull()
     expect(parseSource('wide')).toBeNull()
   })
-  it('suggests the next unused source, configured mics first', () => {
-    expect(nextFreeSource([], [3, 4])).toBe('mic:3')
-    expect(nextFreeSource(['mic:3'], [3, 4])).toBe('mic:4')
-    expect(nextFreeSource(['mic:3', 'mic:4'], [3, 4])).toBe('mic:1')
+  it('suggests the next unused source from the lists, configured mics first', () => {
+    const mics = [1, 3, 4, 11]
+    const slots = [1, 2, 7]
+    expect(nextFreeSource([], [3, 4], mics, slots)).toBe('mic:3')
+    expect(nextFreeSource(['mic:3'], [3, 4], mics, slots)).toBe('mic:4')
+    expect(nextFreeSource(['mic:3', 'mic:4'], [3, 4], mics, slots)).toBe('mic:1')
+    expect(nextFreeSource(['mic:1', 'mic:3', 'mic:4'], [3, 4], mics, slots)).toBe('mic:11')
+    expect(nextFreeSource(['mic:1', 'mic:3', 'mic:4', 'mic:11'], [], mics, slots)).toBe('slot:1')
+    expect(nextFreeSource([], [], [], [5])).toBe('slot:5')
+    expect(nextFreeSource([], [], [], [])).toBeNull()
   })
   it('maps speech level to bar fill', () => {
     expect(speechFill(-70)).toBe(0)

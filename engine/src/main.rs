@@ -8,6 +8,8 @@ mod format;
 mod layout;
 mod mixer;
 mod osc;
+mod perf;
+mod picker;
 mod runner;
 mod server;
 mod specs;
