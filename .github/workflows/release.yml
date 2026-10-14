@@ -35,12 +35,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-      - name: GStreamer installers (cache)
+      # Partial downloads are saved even when the job fails, so every run
+      # continues where the last one stopped (the server is slow and drops
+      # connections); once complete, they come from the cache.
+      - name: GStreamer installers (restore)
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: gst-msi
-          key: gstreamer-msvc-x86_64-1.26.9
+          key: gstreamer-msi-1.26.9-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: gstreamer-msi-1.26.9-
       - name: GStreamer (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -55,7 +59,7 @@ jobs:
           foreach ($m in @("gstreamer-1.0-msvc-x86_64-$v.msi", "gstreamer-1.0-devel-msvc-x86_64-$v.msi")) {
             $f = "gst-msi/$m"
             $total = [int64]((curl.exe -sIL --http1.1 "$base/$m" | Select-String -Pattern '^content-length' | Select-Object -Last 1).ToString().Split(':')[1].Trim())
-            for ($i = 0; $i -lt 60; $i++) {
+            for ($i = 0; $i -lt 200; $i++) {
               $have = if (Test-Path $f) { (Get-Item $f).Length } else { 0 }
               if ($have -eq $total) { break }
               curl.exe -sfL --http1.1 -C - -o $f "$base/$m"
@@ -68,6 +72,12 @@ jobs:
           if (-not (Test-Path "$root\lib\pkgconfig\gstreamer-1.0.pc")) { throw "GStreamer devel files missing under $root" }
           "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
           "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: GStreamer installers (save)
+        if: always() && runner.os == 'Windows'
+        uses: actions/cache/save@v4
+        with:
+          path: gst-msi
+          key: gstreamer-msi-1.26.9-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Version from tag
         if: startsWith(github.ref, 'refs/tags/v')
