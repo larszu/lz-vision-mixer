@@ -594,6 +594,8 @@ function apply(c) {
       const d = state.audioDevices.find((x) => x.id === c.device)
       need(d, `No such audio device: ${c.device}`)
       need(Number.isInteger(c.channel) && c.channel >= 0 && c.channel < d.channels, `Channel ${c.channel} out of range for ${d.name}`)
+      if (typeof c.stereo === 'boolean') m.stereo = c.stereo
+      need(!m.stereo || c.channel + 1 < d.channels, `${d.name} has ${d.channels} channels; channel ${c.channel + 2} does not exist`)
       Object.assign(m, { device: c.device, channel: c.channel, status: 'starting', error: null })
       if (typeof c.name === 'string') m.name = c.name
       setTimeout(() => {

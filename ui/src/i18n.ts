@@ -108,6 +108,8 @@ const de: Record<string, string> = {
   'Needs DeckLink, not available on this engine': 'Braucht DeckLink, auf dieser Engine nicht vorhanden',
   'Needs NDI, not available on this engine': 'Braucht NDI, auf dieser Engine nicht vorhanden',
   'Needs SRT, not available on this engine': 'Braucht SRT, auf dieser Engine nicht vorhanden',
+  'Stereo': 'Stereo',
+  'Stereo pair: this channel and the next (line inputs, music)': 'Stereo-Paar: dieser Kanal und der nächste (Line-Eingänge, Musik)',
   'Needs a video encoder, none available on this engine': 'Braucht einen Video-Encoder, auf dieser Engine keiner vorhanden',
   'Screen capture is not available on this engine': 'Bildschirmaufnahme ist in dieser Engine nicht verfügbar',
   'WebRTC (WHEP) is not available on this engine': 'WebRTC (WHEP) ist in dieser Engine nicht verfügbar',

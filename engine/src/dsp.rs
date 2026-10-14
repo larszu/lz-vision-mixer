@@ -198,37 +198,48 @@ impl Strip {
     }
 
     pub fn process(&mut self, buf: &mut [f32]) {
-        let hold = (GATE_HOLD_MS / 1000.0 * RATE) as usize;
         for s in buf.iter_mut() {
-            let mut x = *s as f64;
-            if let Some([a, b]) = &mut self.hpf {
-                x = b.run(a.run(x));
-            }
-            if self.p.gate {
-                // Peak follower: instant up, 10 ms down.
-                let a = x.abs();
-                self.gate_env = if a > self.gate_env { a } else { a + (self.gate_env - a) * self.env_fall };
-                let target = if self.gate_env >= self.gate_open {
-                    self.gate_hold = hold;
-                    1.0
-                } else if self.gate_hold > 0 {
-                    self.gate_hold -= 1;
-                    1.0
-                } else {
-                    self.gate_floor
-                };
-                let c = if target > self.gate_gain { self.gate_attack } else { self.gate_release };
-                self.gate_gain = target + (self.gate_gain - target) * c;
-                x *= self.gate_gain;
-            }
-            if self.p.comp {
-                let level = lin_to_db(x.abs());
-                let c = if level > self.comp_env_db { self.comp_attack } else { self.comp_release };
-                self.comp_env_db = level + (self.comp_env_db - level) * c;
-                x *= db_to_lin(self.comp_gain_db(self.comp_env_db));
-            }
-            *s = (x * self.makeup) as f32;
+            *s = self.tick(*s as f64) as f32;
         }
+    }
+
+    /// One channel of interleaved audio: samples `channel`, `channel + n`, …
+    pub fn process_channel(&mut self, buf: &mut [f32], channel: usize, channels: usize) {
+        for s in buf.iter_mut().skip(channel).step_by(channels.max(1)) {
+            *s = self.tick(*s as f64) as f32;
+        }
+    }
+
+    #[inline]
+    fn tick(&mut self, mut x: f64) -> f64 {
+        let hold = (GATE_HOLD_MS / 1000.0 * RATE) as usize;
+        if let Some([a, b]) = &mut self.hpf {
+            x = b.run(a.run(x));
+        }
+        if self.p.gate {
+            // Peak follower: instant up, 10 ms down.
+            let a = x.abs();
+            self.gate_env = if a > self.gate_env { a } else { a + (self.gate_env - a) * self.env_fall };
+            let target = if self.gate_env >= self.gate_open {
+                self.gate_hold = hold;
+                1.0
+            } else if self.gate_hold > 0 {
+                self.gate_hold -= 1;
+                1.0
+            } else {
+                self.gate_floor
+            };
+            let c = if target > self.gate_gain { self.gate_attack } else { self.gate_release };
+            self.gate_gain = target + (self.gate_gain - target) * c;
+            x *= self.gate_gain;
+        }
+        if self.p.comp {
+            let level = lin_to_db(x.abs());
+            let c = if level > self.comp_env_db { self.comp_attack } else { self.comp_release };
+            self.comp_env_db = level + (self.comp_env_db - level) * c;
+            x *= db_to_lin(self.comp_gain_db(self.comp_env_db));
+        }
+        x * self.makeup
     }
 }
 
@@ -302,6 +313,16 @@ mod tests {
         let mut x = vec![0.25f32; 10];
         s.process(&mut x);
         assert!((x[5] - 0.4988).abs() < 0.001);
+    }
+
+    #[test]
+    fn stereo_channels_are_processed_separately() {
+        let p = StripParams { makeup_db: 6.0, ..Default::default() };
+        let (mut l, mut r) = (Strip::new(p.clone()), Strip::new(p));
+        let mut x = vec![0.25f32, -0.25, 0.25, -0.25];
+        l.process_channel(&mut x, 0, 2);
+        r.process_channel(&mut x, 1, 2);
+        assert!((x[0] - 0.4988).abs() < 0.001 && (x[1] + 0.4988).abs() < 0.001);
     }
 
     #[test]

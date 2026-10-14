@@ -72,30 +72,33 @@ fn list_class(class: &str) -> Vec<Found> {
     out
 }
 
-/// One row that takes `channel` of `inputs` channels (to mono).
-pub fn pick_matrix(inputs: u32, channel: u32) -> Vec<Vec<f32>> {
-    vec![(0..inputs).map(|i| if i == channel { 1.0 } else { 0.0 }).collect()]
+/// Rows that take `channel` (mono) or `channel` and `channel + 1` (stereo).
+pub fn pick_matrix(inputs: u32, channel: u32, stereo: bool) -> Vec<Vec<f32>> {
+    let row = |c: u32| (0..inputs).map(|i| if i == c { 1.0 } else { 0.0 }).collect();
+    if stereo { vec![row(channel), row(channel + 1)] } else { vec![row(channel)] }
 }
 
 /// Pipeline: device → force its channel count → pick one channel (mono) →
 /// optional RNNoise → channel strip → both sides → mic bus `mic<n>`.
-pub fn mic_pipeline(dev: &Found, channel: u32, mic: usize, strip: &StripParams) -> Result<gst::Pipeline> {
+pub fn mic_pipeline(dev: &Found, channel: u32, stereo: bool, mic: usize, strip: &StripParams) -> Result<gst::Pipeline> {
     let ch = dev.info.channels.max(1);
-    if channel >= ch {
-        return Err(anyhow!("{} has {} channels; channel {} does not exist", dev.info.name, ch, channel + 1));
+    let last = channel + stereo as u32;
+    if last >= ch {
+        return Err(anyhow!("{} has {} channels; channel {} does not exist", dev.info.name, ch, last + 1));
     }
+    let out_ch = if stereo { 2 } else { 1 };
     let pipeline = gst::Pipeline::new();
     let src = dev.device.create_element(None).context("device has no source element")?;
     let rest = gst::parse::bin_from_description(
         &format!(
-            "audioconvert ! audio/x-raw,channels={ch} ! audioconvert name=pick ! audioresample ! audio/x-raw,format=F32LE,rate=48000,channels=1,layout=interleaved ! {denoise}lzstrip name=strip ! audioconvert ! {AUDIO_CAPS} ! queue ! interaudiosink channel=mic{mic} async=false",
+            "audioconvert ! audio/x-raw,channels={ch} ! audioconvert name=pick ! audioresample ! audio/x-raw,format=F32LE,rate=48000,channels={out_ch},layout=interleaved ! {denoise}lzstrip name=strip ! audioconvert ! {AUDIO_CAPS} ! queue ! interaudiosink channel=mic{mic} async=false",
             denoise = if strip.denoise { "audiornnoise ! " } else { "" }
         ),
         true,
     )?;
     let pick = rest.by_name("pick").context("pick")?;
     let matrix = gst::Array::new(
-        pick_matrix(ch, channel)
+        pick_matrix(ch, channel, stereo)
             .into_iter()
             .map(|row| gst::Array::new(row.into_iter().map(|v| v.to_send_value())).to_send_value()),
     );
@@ -170,7 +173,8 @@ mod tests {
 
     #[test]
     fn matrix_picks_one_channel_for_both_sides() {
-        assert_eq!(pick_matrix(4, 2), vec![vec![0.0, 0.0, 1.0, 0.0]]);
-        assert_eq!(pick_matrix(1, 0), vec![vec![1.0]]);
+        assert_eq!(pick_matrix(4, 2, false), vec![vec![0.0, 0.0, 1.0, 0.0]]);
+        assert_eq!(pick_matrix(1, 0, false), vec![vec![1.0]]);
+        assert_eq!(pick_matrix(4, 2, true), vec![vec![0.0, 0.0, 1.0, 0.0], vec![0.0, 0.0, 0.0, 1.0]]);
     }
 }

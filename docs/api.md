@@ -65,7 +65,8 @@ interface State {
   outputs: Output[]
   master: { volume: number; muted: boolean }
   capabilities: { decklink: boolean; ndi: boolean; screen: boolean; whep: boolean; srt: boolean; st2110: boolean; encoders: string[] }
-  videoDevices: { id: string; name: string }[]   // cameras and capture cards, for `device:`
+  videoDevices: { id: string; name: string }[]   // cameras and capture cards for `device:` — also DeckLink inputs and
+                                                 // NDI sources once their driver/runtime is installed
   multiview: {                // pixel layout of /mjpeg/multiview, for names and tally on top
     width: number; height: number
     preview: Area; program: Area
@@ -133,6 +134,7 @@ interface Mic {
   name: string
   device: string | null     // AudioDevice.id; null = unused
   channel: number           // 0-based channel of the device
+  stereo: boolean           // channel and channel + 1 as a stereo pair (line inputs, music); the strip runs per side
   status: 'empty'|'starting'|'running'|'error'
   error: string | null
   volume: number            // 0..2, 1 = 0 dB
@@ -158,7 +160,7 @@ State gains `audioDevices: AudioDevice[]` (inputs), `audioOutputs: AudioDevice[]
 
 Commands:
 ```ts
-  | { cmd: 'setMic'; mic: number; device: string; channel: number; name?: string }
+  | { cmd: 'setMic'; mic: number; device: string; channel: number; name?: string; stereo?: boolean }
   | { cmd: 'clearMic'; mic: number }
   | { cmd: 'renameMic'; mic: number; name: string }
   | { cmd: 'micAudio'; mic: number; volume?: number; muted?: boolean; inProgram?: boolean; delayMs?: number }
